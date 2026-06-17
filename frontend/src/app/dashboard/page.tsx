@@ -86,6 +86,8 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [analyzing, setAnalyzing] = useState(false);
   const [runningFull, setRunningFull] = useState(false);
+  const [pollingActive, setPollingActive] = useState(false);
+  const [pollingLoading, setPollingLoading] = useState(false);
 
   const fetchSummary = useCallback(async () => {
     setLoading(true);
@@ -150,6 +152,30 @@ export default function Dashboard() {
     fetchSummary();
   }, [fetchSummary]);
 
+  // Check polling status on mount
+  useEffect(() => {
+    fetch("/api/market/polling/status")
+      .then(r => r.json())
+      .then(json => { if (json.status === "ok") setPollingActive(json.is_running); })
+      .catch(() => {});
+  }, []);
+
+  const togglePolling = useCallback(async () => {
+    setPollingLoading(true);
+    try {
+      const endpoint = pollingActive ? "/api/market/polling/stop" : "/api/market/polling/start";
+      const res = await fetch(endpoint, { method: "POST" });
+      const json = await res.json();
+      if (json.status === "ok") {
+        setPollingActive(!pollingActive);
+      }
+    } catch (e) {
+      console.error("Polling toggle failed:", e);
+    } finally {
+      setPollingLoading(false);
+    }
+  }, [pollingActive]);
+
   const b = summary?.breadth;
 
   return (
@@ -160,14 +186,29 @@ export default function Dashboard() {
           <h2 className="text-lg font-semibold text-gray-700">
             {summary ? `市场概览 · ${summary.date}` : "加载中..."}
           </h2>
-          <button
-            onClick={fetchSummary}
-            disabled={loading}
-            className="flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700"
-          >
-            <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
-            刷新数据
-          </button>
+          <div className="flex items-center gap-2">
+            {/* Polling Toggle */}
+            <button
+              onClick={togglePolling}
+              disabled={pollingLoading}
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg font-medium transition-all ${
+                pollingActive
+                  ? "bg-green-100 text-green-700 border border-green-300 hover:bg-green-200"
+                  : "bg-gray-100 text-gray-500 border border-gray-200 hover:bg-gray-200"
+              } disabled:opacity-50`}
+            >
+              <span className={`w-2 h-2 rounded-full ${pollingActive ? "bg-green-500 animate-pulse" : "bg-gray-400"}`} />
+              {pollingLoading ? "切换中..." : pollingActive ? "实时轮询中" : "实时轮询"}
+            </button>
+            <button
+              onClick={fetchSummary}
+              disabled={loading}
+              className="flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700"
+            >
+              <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
+              刷新数据
+            </button>
+          </div>
         </div>
 
         {/* Market Breadth Cards */}
