@@ -1,0 +1,40 @@
+# AI Trading OS - Backend Dependencies
+# Core
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.5
+pydantic-settings==2.7.1
+
+# AI / LLM
+anthropic==0.42.0
+openai==2.41.1
+langgraph==0.2.60
+langchain==0.3.14
+langchain-core==0.3.29
+
+# Database
+sqlalchemy==2.0.36
+aiosqlite==0.20.0
+greenlet==3.2.5
+
+# Vector DB
+chromadb==0.5.23
+
+# Data sources
+akshare>=1.14.0
+
+# RPA (future use)
+# pyautogui
+# opencv-python
+# paddleocr
+
+# Chart
+matplotlib==3.9.4
+
+# Scheduler
+apscheduler==3.10.4
+
+# Utils
+httpx==0.28.1
+python-dotenv==1.0.1
+websockets==14.1
