@@ -1344,7 +1344,7 @@ export default function StockPage() {
       </div>
 
       {/* AI Chat Panel — right side layout */}
-      <AIChatPanel code={code} stockName={info?.name && !/^\d{6}$/.test(info.name) ? info.name : code} />
+      <AIChatPanel code={code} stockName={info?.name && !/^\d{6}$/.test(info.name) ? info.name : code} analysis={aiResult} />
     </div>
   );
 }

@@ -16,7 +16,7 @@ import threading
 import re
 import json as json_mod
 import logging
-from typing import Optional
+from typing import Optional, Union
 
 import akshare as ak
 from fastapi import APIRouter, HTTPException, Query
@@ -883,6 +883,7 @@ JSON格式示例:
 
 class ChatRequest(BaseModel):
     messages: list[dict]  # [{role: "user"|"assistant", content: "..."}]
+    analysis: Optional[dict] = None  # current AI analysis from the page
 
 
 @router.post("/{code}/chat")
@@ -892,31 +893,73 @@ async def chat_with_stock(code: str, req: ChatRequest):
 
     # Load stock context
     stock_name = _resolve_name(code, code)
-    bars, _, _ = await _read_ohlcv_from_db(code, 30)
+    bars, _, _ = await _read_ohlcv_from_db(code, 9999)  # all available data
 
-    # Build compact OHLCV summary
+    # Build compact OHLCV summary — send ALL available bars
     ohlcv_text = ""
     if bars:
         lines = []
-        for b in bars[-20:]:  # last 20 bars
+        for b in bars:
             lines.append(f"{b['date']} O{b['open']:.2f} H{b['high']:.2f} L{b['low']:.2f} C{b['close']:.2f} V{b['volume']:.0f}")
         ohlcv_text = "\n".join(lines)
 
-    # Build system prompt with stock context
-    system = f"""你是AI Trading OS的个股分析助手。你正在帮助用户分析股票 {stock_name} ({code})。
+    # Build analysis context from current page state
+    analysis_text = ""
+    if req.analysis:
+        a = req.analysis
+        parts = []
+        if a.get("phase"): parts.append(f"阶段:{a['phase']}")
+        if a.get("rating"): parts.append(f"评级:{a['rating']}")
+        if a.get("signals"): parts.append("信号:" + ",".join(a["signals"]))
+        if a.get("support_levels"):
+            sl = ",".join(l["label"] + "@" + str(l["price"]) for l in a["support_levels"])
+            parts.append("支撑:" + sl)
+        if a.get("resistance_levels"):
+            rl = ",".join(l["label"] + "@" + str(l["price"]) for l in a["resistance_levels"])
+            parts.append("阻力:" + rl)
+        if a.get("phases"):
+            pl = ",".join(p["label"] + "(" + str(p.get("start_date","")) + "~" + str(p.get("end_date","")) + ")" for p in a["phases"])
+            parts.append("区间:" + pl)
+        if a.get("advice"): parts.append(f"建议:{a['advice']}")
+        analysis_text = " | ".join(parts) if parts else ""
 
-当前股票最近20个交易日K线数据（前复权）:
-日期 开盘 最高 最低 收盘 成交量
-```ohlcv
-{ohlcv_text}
-```
+    # Build latest bar info
+    latest_info = ""
+    if bars:
+        latest = bars[-1]
+        prev = bars[-2] if len(bars) > 1 else None
+        chg = ((latest["close"] - prev["close"]) / prev["close"] * 100) if prev and prev["close"] > 0 else 0
+        latest_info = "最新: {date} 开{open:.2f} 高{high:.2f} 低{low:.2f} 收{close:.2f} 量{vol:.0f} 涨幅{chg:+.2f}%".format(
+            date=latest["date"], open=latest["open"], high=latest["high"],
+            low=latest["low"], close=latest["close"], vol=latest["volume"], chg=chg)
 
-请根据以上数据回答用户的问题。回答要求:
-1. 基于数据给出客观分析，不要编造不存在的数据
-2. 如果用户指出之前分析有误，虚心接受并重新分析
-3. 回答简洁，通常不超过200字
-4. 使用中文回复
-5. 如果用户问的是当前数据不支持的，诚实说明"""
+    system = f"""你是AI Trading OS的个股分析助手。
+
+【以下是该股票的真实数据，你必须严格基于这些数据回答问题】
+
+股票: {stock_name}({code})
+{latest_info}
+
+最近20日K线（日期 开 高 低 收 量）:
+{ohlcv_text if ohlcv_text else '暂无数据'}
+
+AI分析结论: {analysis_text if analysis_text else '未运行'}
+
+【严格要求】
+1. 只使用上面给出的数据。如果数据中没有，说"数据中未显示"
+2. 不要编造任何价格、日期、信号或结论
+3. 中文回复
+
+【输出格式 — 必须使用结构化形式】
+- 使用标题+条目的形式组织回答
+- 数值类信息用列表呈现（如：价格、日期、涨跌幅）
+- 分析判断类信息用简短段落说明理由
+- 格式示例：
+  **关键数据**
+  · 最新收盘价: XX元
+  · 近5日涨幅: +XX%
+  **判断依据**
+  · （1-2句分析）"""
 
     try:
         from backend.llm_adapter import get_llm

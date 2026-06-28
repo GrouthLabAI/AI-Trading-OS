@@ -11,9 +11,10 @@ interface ChatMessage {
 interface Props {
   code: string;
   stockName: string;
+  analysis?: Record<string, any> | null;
 }
 
-export default function AIChatPanel({ code, stockName }: Props) {
+export default function AIChatPanel({ code, stockName, analysis }: Props) {
   const [open, setOpen] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
@@ -51,7 +52,7 @@ export default function AIChatPanel({ code, stockName }: Props) {
       const res = await fetch(`/api/stock/${code}/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: allMsgs }),
+        body: JSON.stringify({ messages: allMsgs, analysis }),
       });
       const json = await res.json();
       if (json.status === "ok") {
