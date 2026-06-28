@@ -30,8 +30,22 @@ async def market_summary():
 
 @router.get("/emotion")
 async def market_emotion():
-    """Run the EmotionAgent to assess current market sentiment phase."""
+    """Run the EmotionAgent to assess current market sentiment phase.
+
+    Pre-condition: meaningful market data must be available.
+    Returns 503 with a clear message during pre-market, weekends, or data outages.
+    """
     try:
+        # Guard: check data availability before running AI
+        status = DataService.is_data_available()
+        if not status["available"]:
+            return {
+                "status": "unavailable",
+                "data": None,
+                "message": status["reason"],
+                "data_status": status,
+            }
+
         agent = EmotionAgent()
         result = await agent.analyze()
         return {"status": "ok", "data": result}
@@ -39,6 +53,22 @@ async def market_emotion():
         raise HTTPException(status_code=500, detail=f"Prompt file missing: {e}")
     except ValueError as e:
         raise HTTPException(status_code=500, detail=f"LLM config error: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Data status check ────────────────────────────────────────────────
+
+@router.get("/data-status")
+async def data_status():
+    """Check whether meaningful market data is currently available.
+
+    Call this before running AI analysis to avoid generating analysis
+    on empty or stale data (e.g., pre-market, weekends, holidays).
+    """
+    try:
+        status = DataService.is_data_available()
+        return {"status": "ok", "data": status}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -81,8 +111,21 @@ async def full_analysis():
     """Start the complete agent pipeline in background. Returns task_id immediately.
 
     Poll GET /api/market/analyze/{task_id} to check status and get results.
+
+    Pre-condition: meaningful market data must be available.
+    Returns 503 with a clear message during pre-market, weekends, or data outages.
     """
     try:
+        # Guard: check data availability before running AI analysis
+        status = DataService.is_data_available()
+        if not status["available"]:
+            return {
+                "status": "unavailable",
+                "task_id": None,
+                "message": status["reason"],
+                "data_status": status,
+            }
+
         async def _run():
             center = ScoringCenter()
             return await center.run_full_analysis()
@@ -192,8 +235,20 @@ async def trigger_recalibration():
 
     Runs delta analysis: morning data vs pre-market expectations,
     re-ranks candidates, and returns updated recommendations.
+
+    Requires meaningful market data to be available.
     """
     try:
+        # Guard: check data availability
+        status = DataService.is_data_available()
+        if not status["available"]:
+            return {
+                "status": "unavailable",
+                "data": None,
+                "message": status["reason"],
+                "data_status": status,
+            }
+
         result = await _run_recalibration_task()
         return result
     except Exception as e:

@@ -44,6 +44,28 @@ def _cache_set(key: str, value):
         _cache[key] = (time.time(), value)
 
 
+def _minutes_until_open(now: datetime.datetime) -> int:
+    """Calculate minutes until market open at 9:30."""
+    open_time = now.replace(hour=9, minute=30, second=0, microsecond=0)
+    delta = open_time - now
+    return max(0, int(delta.total_seconds() / 60))
+
+
+def _infer_date_from_pool(pool: list[dict]) -> str:
+    """Try to infer the effective date from pool data (today or yesterday)."""
+    if not pool:
+        return ""
+    # The pool data comes from AKShare which returns the most recent
+    # trading day. If today is a weekday and it's pre-market, the data
+    # is likely from yesterday (or last Friday if today is Monday).
+    today = datetime.date.today()
+    if today.weekday() == 0:  # Monday → data is from last Friday
+        return (today - datetime.timedelta(days=3)).strftime("%Y%m%d")
+    elif today.weekday() < 5:  # Tue-Fri → data is from yesterday
+        return (today - datetime.timedelta(days=1)).strftime("%Y%m%d")
+    return ""
+
+
 class DataService:
     """Handles external data fetching and database persistence."""
 
@@ -141,19 +163,50 @@ class DataService:
     # ── Limit-up pool ────────────────────────────────────────────────
 
     @staticmethod
+    def _get_recent_trading_dates(max_days_back: int = 10) -> list[str]:
+        """Return recent trading day strings (YYYYMMDD), skipping weekends.
+
+        Walks backwards from today, skipping Sat/Sun, up to max_days_back
+        calendar days. Always includes today as the first candidate.
+        """
+        today = datetime.date.today()
+        dates = []
+        d = today
+        # Walk back up to max_days_back calendar days
+        for _ in range(max_days_back):
+            if d.weekday() < 5:  # Mon-Fri
+                dates.append(d.strftime("%Y%m%d"))
+            d -= datetime.timedelta(days=1)
+        return dates
+
+    @staticmethod
     async def fetch_limit_up_pool(date: Optional[str] = None) -> list[dict]:
         """Fetch limit-up stocks for a given date (default: today).
 
         AKShare returns: 序号, 代码, 名称, 涨跌幅, 最新价, 成交额, 流通市值, 总市值, ...
         During non-trading time, returns the most recent trading day's data.
+
+        Fallback strategy: if today returns empty (pre-market, holiday),
+        tries recent trading days until data is found (max 10 calendar days back).
         """
         if date is None:
-            date = datetime.date.today().strftime("%Y%m%d")
+            candidate_dates = DataService._get_recent_trading_dates()
+        else:
+            candidate_dates = [date]
 
-        try:
-            df = ak.stock_zt_pool_em(date=date)
-        except Exception as e:
-            print(f"[DataService] Limit-up pool unavailable for {date}: {e}")
+        for candidate in candidate_dates:
+            try:
+                df = ak.stock_zt_pool_em(date=candidate)
+                if df is not None and len(df) > 0:
+                    if candidate != candidate_dates[0]:
+                        print(f"[DataService] No data for {candidate_dates[0]}, using {candidate} instead")
+                    break  # Found data
+            except Exception as e:
+                print(f"[DataService] Limit-up pool unavailable for {candidate}: {e}")
+                df = None
+        else:
+            # All candidates exhausted
+            print(f"[DataService] Limit-up pool: no data found in {len(candidate_dates)} days")
             return []
 
         stocks = []
@@ -171,6 +224,7 @@ class DataService:
                 "open_count": int(row.get("炸板次数", 0) or 0),
                 "first_limit_time": str(row.get("首次封板时间", "")),
                 "sector": str(row.get("所属行业", "")),
+                "board_count": int(row.get("连板数", 0) or 0),
             })
 
         return stocks
@@ -203,11 +257,16 @@ class DataService:
 
         NOTE: spot market (~40s) and sector ranking (~15s) are too slow
         and are gated behind separate endpoints.
+
+        Includes a data_status field indicating whether the data is live,
+        stale (pre-market / holiday), or unavailable.
         """
         limit_ups = await DataService.fetch_limit_up_pool()
+        status = DataService.is_data_available()
 
         return {
             "date": datetime.date.today().isoformat(),
+            "data_status": status,
             "breadth": {
                 "limit_up": len(limit_ups),
                 "limit_down": 0,
@@ -249,32 +308,125 @@ class DataService:
 
     @staticmethod
     def fetch_limit_up_pool_sync(date: Optional[str] = None) -> list[dict]:
-        """Synchronous version of fetch_limit_up_pool (cached, 30s TTL)."""
+        """Synchronous version of fetch_limit_up_pool (cached, 30s TTL).
+
+        Uses the same fallback strategy: tries today, then recent trading days.
+        """
         if date is None:
-            date = datetime.date.today().strftime("%Y%m%d")
-        cache_key = f"limit_up_{date}"
-        hit, val = _cached(cache_key)
-        if hit:
-            return val
+            candidate_dates = DataService._get_recent_trading_dates()
+        else:
+            candidate_dates = [date]
 
-        try:
-            df = ak.stock_zt_pool_em(date=date)
-        except Exception:
-            return []
+        for candidate in candidate_dates:
+            cache_key = f"limit_up_{candidate}"
+            hit, val = _cached(cache_key)
+            if hit:
+                return val
 
-        stocks = []
-        for _, row in df.iterrows():
-            stocks.append({
-                "code": str(row.get("代码", "")),
-                "name": str(row.get("名称", "")),
-                "change_pct": float(row.get("涨跌幅", 0) or 0),
-                "close": float(row.get("最新价", 0) or 0),
-                "amount": float(row.get("成交额", 0) or 0),
-                "turnover_rate": float(row.get("换手率", 0) or 0),
-                "reason": str(row.get("涨停原因", "")),
-                "open_count": int(row.get("炸板次数", 0) or 0),
-                "first_limit_time": str(row.get("首次封板时间", "")),
-                "sector": str(row.get("所属行业", "")),
-            })
-        _cache_set(cache_key, stocks)
-        return stocks
+            try:
+                df = ak.stock_zt_pool_em(date=candidate)
+            except Exception:
+                continue
+
+            if df is None or len(df) == 0:
+                continue
+
+            stocks = []
+            for _, row in df.iterrows():
+                stocks.append({
+                    "code": str(row.get("代码", "")),
+                    "name": str(row.get("名称", "")),
+                    "change_pct": float(row.get("涨跌幅", 0) or 0),
+                    "close": float(row.get("最新价", 0) or 0),
+                    "amount": float(row.get("成交额", 0) or 0),
+                    "turnover_rate": float(row.get("换手率", 0) or 0),
+                    "reason": str(row.get("涨停原因", "")),
+                    "open_count": int(row.get("炸板次数", 0) or 0),
+                    "first_limit_time": str(row.get("首次封板时间", "")),
+                    "sector": str(row.get("所属行业", "")),
+                    "board_count": int(row.get("连板数", 0) or 0),
+                })
+            _cache_set(cache_key, stocks)
+            if candidate != candidate_dates[0]:
+                print(f"[DataService:Sync] No data for {candidate_dates[0]}, using {candidate} instead")
+            return stocks
+
+        return []
+
+    @staticmethod
+    def is_data_available() -> dict:
+        """Check whether meaningful market data is currently available.
+
+        Returns a dict with:
+          - available: bool — true if data is available for analysis
+          - reason: str — human-readable explanation
+          - is_trading_time: bool — whether we're in A-share trading hours
+          - effective_date: str — the date the data comes from (may not be today)
+        """
+        now = datetime.datetime.now()
+        is_trading = DataService._is_trading_time()
+        weekday = now.weekday()
+
+        # Weekend
+        if weekday >= 5:
+            return {
+                "available": False,
+                "reason": "今天是周末，A股市场休市。数据为最近一个交易日的数据。",
+                "is_trading_time": False,
+                "effective_date": "",
+            }
+
+        # Pre-market (before 9:30)
+        if now.time() < datetime.time(9, 30):
+            # Check if we can get last trading day's data
+            pool = DataService.fetch_limit_up_pool_sync()
+            if pool:
+                return {
+                    "available": False,
+                    "reason": f"距离开盘还有约{_minutes_until_open(now)}分钟，A股尚未开盘。当前显示的是昨日收盘数据，AI分析基于历史数据，不具备实时参考价值。",
+                    "is_trading_time": False,
+                    "effective_date": _infer_date_from_pool(pool),
+                }
+            return {
+                "available": False,
+                "reason": "A股尚未开盘，且无法获取历史交易数据。请等待开盘后再进行分析。",
+                "is_trading_time": False,
+                "effective_date": "",
+            }
+
+        # Midday break (11:30-13:00)
+        midday_start = datetime.time(11, 30)
+        midday_end = datetime.time(13, 0)
+        if midday_start < now.time() < midday_end:
+            return {
+                "available": False,
+                "reason": "A股午间休市（11:30-13:00），当前数据为上午收盘数据。建议下午开盘后重新分析。",
+                "is_trading_time": False,
+                "effective_date": now.strftime("%Y%m%d"),
+            }
+
+        # Post-market (after 15:00)
+        if now.time() > datetime.time(15, 0):
+            return {
+                "available": True,
+                "reason": "A股已收盘，当前为今日最终数据。AI分析基于收盘数据。",
+                "is_trading_time": False,
+                "effective_date": now.strftime("%Y%m%d"),
+            }
+
+        # During trading hours
+        pool = DataService.fetch_limit_up_pool_sync()
+        if not pool:
+            return {
+                "available": False,
+                "reason": "当前为交易时段，但暂时无法获取实时数据。请稍后重试。",
+                "is_trading_time": True,
+                "effective_date": now.strftime("%Y%m%d"),
+            }
+
+        return {
+            "available": True,
+            "reason": "A股交易中，数据实时有效。",
+            "is_trading_time": True,
+            "effective_date": now.strftime("%Y%m%d"),
+        }

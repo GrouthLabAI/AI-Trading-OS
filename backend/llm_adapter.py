@@ -63,6 +63,7 @@ class ClaudeAdapter(BaseLLM):
         response = await client.messages.create(
             model=self.model,
             max_tokens=kwargs.get("max_tokens", 4096),
+            temperature=kwargs.get("temperature", 0.3),
             system=system or None,
             messages=messages,
         )
@@ -105,6 +106,7 @@ class OpenAICompatibleAdapter(BaseLLM):
             model=self.model,
             messages=api_messages,
             max_tokens=kwargs.get("max_tokens", 4096),
+            temperature=kwargs.get("temperature", 0.3),
         )
         return response.choices[0].message.content or ""
 

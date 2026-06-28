@@ -15,6 +15,7 @@ from backend.feishu_api import router as feishu_router
 from backend.backtest_api import router as backtest_router
 from backend.scheduler_api import router as scheduler_router
 from backend.candidate_api import router as candidate_router
+from backend.stock_api import router as stock_router
 
 
 @asynccontextmanager
@@ -28,6 +29,23 @@ async def lifespan(app: FastAPI):
     from backend.scheduler import scheduler
     await scheduler.start()
     scheduler.register_trading_day_jobs()
+
+    # Register daily OHLCV backfill (15:05 after market close)
+    from backend.stock_api import backfill_recent_stocks
+    scheduler.add_cron_job(
+        "daily_backfill",
+        backfill_recent_stocks,
+        hour=15,
+        minute=5,
+        day_of_week="mon-fri",
+        name="日线数据回填到SQLite",
+    )
+
+    # Load name cache + warm spot cache in background (non-blocking)
+    import asyncio as _asyncio
+    from backend.stock_api import warm_spot_cache, _load_name_cache
+    _asyncio.create_task(_load_name_cache())
+    _asyncio.create_task(warm_spot_cache())
 
     # Start the trading day state machine
     from backend.trading_day import trading_day
@@ -78,6 +96,7 @@ app.include_router(feishu_router)
 app.include_router(backtest_router)
 app.include_router(scheduler_router)
 app.include_router(candidate_router)
+app.include_router(stock_router)
 
 
 # Health check

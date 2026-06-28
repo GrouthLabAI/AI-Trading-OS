@@ -86,12 +86,19 @@ class PollingEngine:
                 await asyncio.sleep(30)
 
     async def _collect_snapshot(self) -> Dict[str, Any]:
-        """Collect current market data and store a snapshot."""
-        import akshare as ak
+        """Collect current market data and store a snapshot.
+
+        Uses DataService fallback-aware methods to handle pre-market hours.
+        During non-trading time, snapshots are still collected but marked as stale.
+        """
+        from backend.data_service import DataService
 
         now = datetime.datetime.now()
         trade_date = now.date()
         session = "morning" if now.hour < 12 else "afternoon"
+
+        # Check if data is actually available
+        data_status = DataService.is_data_available()
 
         snapshot_data = {
             "timestamp": now.isoformat(),
@@ -102,31 +109,27 @@ class PollingEngine:
             "up_down_ratio": 0.0,
             "top_sectors": [],
             "candidate_updates": [],
+            "data_available": data_status["available"],
+            "data_status_reason": data_status["reason"],
         }
 
-        # 1. Fetch limit-up pool (fast, ~3s)
+        # 1. Fetch limit-up pool (uses fallback to recent trading days)
         try:
-            df = ak.stock_zt_pool_em(date=trade_date.strftime("%Y%m%d"))
-            if df is not None and len(df) > 0:
-                pool = df.to_dict("records")
+            pool = DataService.fetch_limit_up_pool_sync()
+            if pool:
                 snapshot_data["limit_up_count"] = len(pool)
-                # Estimate limit-down from market breadth (simplified)
-                snapshot_data["limit_down_count"] = 0  # AKShare doesn't have limit-down pool
+                snapshot_data["limit_down_count"] = 0
         except Exception as e:
             logger.warning(f"Polling: limit-up pool fetch failed: {e}")
 
-        # 2. Fetch sector rankings
+        # 2. Fetch sector rankings (uses cached sync method)
         try:
-            sector_df = ak.stock_board_concept_spot_em()
-            if sector_df is not None and len(sector_df) > 0:
-                sectors = sector_df.to_dict("records")
-                sorted_sectors = sorted(
-                    sectors, key=lambda x: float(x.get("涨跌幅", 0)), reverse=True
-                )
+            sectors = DataService.fetch_sector_ranking_sync()
+            if sectors:
                 snapshot_data["top_sectors"] = [
-                    {"name": s.get("板块名称", s.get("name", "")),
-                     "change": float(s.get("涨跌幅", 0))}
-                    for s in sorted_sectors[:5]
+                    {"name": s.get("name", ""),
+                     "change": s.get("change_pct", 0)}
+                    for s in sectors[:5]
                 ]
         except Exception as e:
             logger.warning(f"Polling: sector fetch failed: {e}")
