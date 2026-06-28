@@ -336,7 +336,6 @@ export default function StockPage() {
   const chartApiRef = useRef<IChartApi | null>(null);
   const candleSeriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const volSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
-  const tvLogoSlotRef = useRef<HTMLSpanElement>(null);
 
   // Crosshair tooltip state
   const [crosshair, setCrosshair] = useState<{
@@ -883,16 +882,6 @@ export default function StockPage() {
       });
     });
 
-    // Move TradingView logo from chart bottom-left to header
-    setTimeout(() => {
-      const logo = chartRef.current?.querySelector<HTMLAnchorElement>("a[href*='tradingview.com']");
-      if (logo && tvLogoSlotRef.current) {
-        logo.style.position = "";
-        logo.style.inset = "";
-        tvLogoSlotRef.current.appendChild(logo);
-      }
-    }, 100);
-
     chartApiRef.current = chart;
     candleSeriesRef.current = candleSeries;
     volSeriesRef.current = volSeries;
@@ -900,7 +889,6 @@ export default function StockPage() {
     return () => {
       observer.disconnect();
       // Remove moved logo + primitives
-      if (tvLogoSlotRef.current) tvLogoSlotRef.current.innerHTML = "";
       chart.remove();
       chartApiRef.current = null;
     };
@@ -1017,9 +1005,15 @@ export default function StockPage() {
                      className="text-xs text-blue-500 hover:text-blue-700 flex items-center gap-0.5">
                     <ExternalLink className="w-3 h-3" /> 同花顺
                   </a>
+                  <a href="https://www.tradingview.com/"
+                     target="_blank" rel="noopener noreferrer"
+                     className="text-xs text-blue-500 hover:text-blue-700 flex items-center gap-0.5 ml-1"
+                     title="图表引擎: TradingView">
+                    <BarChart3 className="w-3 h-3" /> TV
+                  </a>
                 </div>
                 <div className="flex items-baseline gap-3 mt-2">
-                  <span className="text-3xl font-bold text-gray-900">{fmt(info.close)}</span>
+                  <span className={`text-3xl font-bold ${info.change_pct >= 0 ? "text-[#FF381A]" : "text-[#009B67]"}`}>{fmt(info.close)}</span>
                   <span className={`text-lg font-semibold ${info.change_pct >= 0 ? "text-[#FF381A]" : "text-[#009B67]"}`}>
                     {fmtPct(info.change_pct)}
                   </span>
@@ -1097,7 +1091,6 @@ export default function StockPage() {
                   </span>
                 </div>
               )}
-              <span ref={tvLogoSlotRef} />
               {/* Settings */}
               <div className="relative" ref={settingsRef}>
                 <button

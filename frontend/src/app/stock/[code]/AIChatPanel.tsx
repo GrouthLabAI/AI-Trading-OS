@@ -1,7 +1,15 @@
 "use client";
 
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { MessageSquare, X, Send, Loader2, ChevronLeft } from "lucide-react";
+import { marked } from "marked";
+import DOMPurify from "dompurify";
+
+marked.setOptions({ breaks: true, gfm: true });
+
+function renderMd(text: string): string {
+  return DOMPurify.sanitize(marked.parse(text) as string);
+}
 
 interface ChatMessage {
   role: "user" | "assistant";
@@ -19,7 +27,32 @@ export default function AIChatPanel({ code, stockName, analysis }: Props) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [panelWidth, setPanelWidth] = useState(() => {
+    try { return parseInt(localStorage.getItem("ai-panel-width") || "380", 10); } catch { return 380; }
+  });
   const bottomRef = useRef<HTMLDivElement>(null);
+  const resizing = useRef(false);
+
+  // ── Drag-to-resize ─────────────────────────────────────────────
+
+  useEffect(() => {
+    const onMouseMove = (e: MouseEvent) => {
+      if (!resizing.current) return;
+      const w = window.innerWidth - e.clientX;
+      setPanelWidth(Math.max(280, Math.min(600, w)));
+    };
+    const onMouseUp = () => { resizing.current = false; document.body.style.cursor = ""; };
+    document.addEventListener("mousemove", onMouseMove);
+    document.addEventListener("mouseup", onMouseUp);
+    return () => {
+      document.removeEventListener("mousemove", onMouseMove);
+      document.removeEventListener("mouseup", onMouseUp);
+    };
+  }, []);
+
+  useEffect(() => {
+    try { localStorage.setItem("ai-panel-width", String(panelWidth)); } catch {}
+  }, [panelWidth]);
   const inputRef = useRef<HTMLInputElement>(null);
 
   // ESC to close
@@ -91,7 +124,11 @@ export default function AIChatPanel({ code, stockName, analysis }: Props) {
 
   // ── Open state: full panel ──
   return (
-    <div className="shrink-0 w-[380px] border-l border-gray-200 bg-white flex flex-col sticky top-0 h-screen">
+    <div className="shrink-0 border-l border-gray-200 bg-white flex flex-col sticky top-0 h-screen relative" style={{ width: panelWidth }}>
+          {/* Drag handle */}
+          <div className="absolute left-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-[#10a37f]/30 z-10"
+            onMouseDown={(e) => { e.preventDefault(); resizing.current = true; document.body.style.cursor = "col-resize"; }}
+          />
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 shrink-0">
         <div className="flex items-center gap-2">
@@ -137,7 +174,10 @@ export default function AIChatPanel({ code, stockName, analysis }: Props) {
                 ? "bg-[#10a37f] text-white"
                 : "bg-gray-100 text-gray-700"
             }`}>
-              <div className="whitespace-pre-wrap">{m.content}</div>
+              {m.role === "assistant"
+                ? <div className="markdown-body text-sm" dangerouslySetInnerHTML={{ __html: renderMd(m.content) }} />
+                : <div className="whitespace-pre-wrap">{m.content}</div>
+              }
             </div>
           </div>
         ))}
