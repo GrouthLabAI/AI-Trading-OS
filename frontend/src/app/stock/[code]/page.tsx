@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { Loader2, Search, TrendingUp, TrendingDown, BarChart3, Target, Shield, Zap, ExternalLink, ChevronRight, AlertTriangle, Maximize2, Minimize2, Settings } from "lucide-react";
 import AIChatPanel from "./AIChatPanel";
-import { createChart, IChartApi, ISeriesApi, CandlestickData, HistogramData, Time, CrosshairMode, LineData, CandlestickSeries, HistogramSeries, LineSeries, createSeriesMarkers, ISeriesPrimitive } from "lightweight-charts";
+import { createChart, IChartApi, ISeriesApi, CandlestickData, HistogramData, Time, CrosshairMode, LineData, CandlestickSeries, HistogramSeries, LineSeries, createSeriesMarkers } from "lightweight-charts";
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -302,7 +302,8 @@ export default function StockPage() {
   const [chartFullscreen, setChartFullscreen] = useState(false);
   const [showCrosshair, setShowCrosshair] = useState(false);
   const [showSR, setShowSR] = useState(false); // support/resistance toggle
-  const [pinnedPhases, setPinnedPhases] = useState<Set<string>>(new Set()); // active phase overlays
+  const [pinnedPhases, setPinnedPhases] = useState<Set<string>>(new Set());
+  const [phaseBands, setPhaseBands] = useState<{ x1: number; x2: number; color: string }[]>([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const settingsRef = useRef<HTMLDivElement>(null);
 
@@ -415,12 +416,50 @@ export default function StockPage() {
     if (chartApiRef.current && aiResult && bars.length > 0) {
       drawWyckoffOverlays(chartApiRef.current, bars, aiResult, candleSeriesRef.current, showSR, pinnedPhases);
     }
-  }, [aiResult, showSR, pinnedPhases.size]); // eslint-disable-line
+  }, [aiResult, showSR]); // eslint-disable-line
+
+  // Phase band coordinates (DOM overlay, no primitive — no height change)
+  const updatePhaseBands = useCallback(() => {
+    if (!chartApiRef.current || !aiResult?.phases || pinnedPhases.size === 0) {
+      setPhaseBands([]);
+      return;
+    }
+    const ts = chartApiRef.current.timeScale();
+    const bands: { x1: number; x2: number; color: string }[] = [];
+    aiResult.phases.forEach((p) => {
+      if (!pinnedPhases.has(p.phase)) return;
+      const x1 = ts.timeToCoordinate(p.start_date as Time);
+      const x2 = ts.timeToCoordinate(p.end_date as Time);
+      if (x1 != null && x2 != null) {
+        bands.push({
+          x1,
+          x2,
+          color: (PHASE_COLORS_MAP[p.phase] || "rgba(156,163,175,0.10)").replace("0.10", "0.15"),
+        });
+      }
+    });
+    setPhaseBands(bands);
+  }, [aiResult, pinnedPhases]);
+
+  useEffect(() => { updatePhaseBands(); }, [updatePhaseBands]);
+
+  // Subscribe to timeScale changes for live band updates
+  useEffect(() => {
+    if (!chartApiRef.current) return;
+    const ts = chartApiRef.current.timeScale();
+    const handler = () => updatePhaseBands();
+    ts.subscribeVisibleLogicalRangeChange(handler);
+    return () => { try { ts.unsubscribeVisibleLogicalRangeChange(handler); } catch {} };
+  }, [updatePhaseBands]);
 
   // Dedicated redraw for phase toggle (pinnedPhases change)
   useEffect(() => {
     if (chartApiRef.current && aiResult && bars.length > 0) {
       drawWyckoffOverlays(chartApiRef.current, bars, aiResult, candleSeriesRef.current, showSR, pinnedPhases);
+      // addSeries/removeSeries triggers async re-layout — restore height after
+      if (!chartFullscreen) {
+        setTimeout(() => chartApiRef.current?.applyOptions({ height: 560 }), 100);
+      }
     }
   }, [pinnedPhases]); // eslint-disable-line
 
@@ -439,7 +478,7 @@ export default function StockPage() {
     const timer = setTimeout(() => {
       chartApiRef.current?.applyOptions({
         width: chartRef.current?.clientWidth || window.innerWidth,
-        height: window.innerHeight - 60,
+        height: chartRef.current?.parentElement?.clientHeight || window.innerHeight - 60,
       });
     }, 100);
     return () => {
@@ -456,7 +495,7 @@ export default function StockPage() {
         setTimeout(() => {
           chartApiRef.current?.applyOptions({
             width: chartRef.current?.clientWidth || window.innerWidth,
-            height: window.innerHeight - 60,
+            height: chartRef.current?.parentElement?.clientHeight || window.innerHeight - 60,
           });
         }, 50);
       } else {
@@ -466,7 +505,7 @@ export default function StockPage() {
             width: chartRef.current?.clientWidth || 800,
             height: 560,
           });
-        }, 50);
+        }, 200);
       }
       return !prev;
     });
@@ -491,42 +530,6 @@ export default function StockPage() {
     }
   }, [code]);
 
-  // ── Phase band primitive ───────────────────────────────────────
-
-  const phaseBandPrims = useRef<{ p: ISeriesPrimitive<Time>; series: ISeriesApi<"Candlestick"> }[]>([]);
-
-  function createPhaseBandPrimitive(startDate: string, endDate: string, color: string): ISeriesPrimitive<Time> {
-    let _chart: IChartApi | null = null;
-    let _ts: any = null;
-    return {
-      attached({ chart, requestUpdate }: any): void {
-        _chart = chart;
-        _ts = chart.timeScale();
-        _ts.subscribeVisibleLogicalRangeChange(() => requestUpdate?.());
-      },
-      detached(): void { _chart = null; _ts = null; },
-      paneViews() {
-        return [{
-          renderer() {
-            return {
-              draw(target: any) {
-                if (!_chart || !_ts) return;
-                const x1 = _ts.timeToCoordinate(startDate as Time);
-                const x2 = _ts.timeToCoordinate(endDate as Time);
-                if (x1 == null || x2 == null) return;
-                target.useMediaCoordinateSpace((scope: any) => {
-                  scope.context.fillStyle = color;
-                  scope.context.fillRect(x1, 0, x2 - x1, scope.mediaSize.height);
-                });
-              },
-              destroy(): void {},
-            };
-          },
-        }];
-      },
-    };
-  }
-
   // ── Draw Wyckoff overlays on chart ─────────────────────────────
 
   const wyckoffRefs = useRef<ISeriesApi<any>[]>([]);
@@ -542,27 +545,14 @@ export default function StockPage() {
     const minPrice = Math.min(...bars.map((b) => b.low));
     const maxPrice = Math.max(...bars.map((b) => b.high));
 
-    // ── Phase bands ──
+    // ── Phase bottom strips ──
     const phaseBase = minPrice * 0.96;
-    // Clean up old primitives
-    phaseBandPrims.current.forEach(({ p, series }) => { try { series.detachPrimitive(p); } catch {} });
-    phaseBandPrims.current = [];
-
     result.phases?.forEach((p) => {
       const isPinned = pinnedPhases?.has(p.phase);
-      const alpha = isPinned ? "0.20" : "0.06";
+      const alpha = isPinned ? "0.30" : "0.06";
       const color = (PHASE_COLORS_MAP[p.phase] || "rgba(156,163,175,0.08)").replace(/0\.\d+/, alpha);
       const lw = (isPinned ? 4 : 2) as 2 | 4;
 
-      // Full-height band via primitive (pinned only)
-      if (isPinned && candleSeries) {
-        const bandColor = (PHASE_COLORS_MAP[p.phase] || "rgba(156,163,175,0.15)").replace("0.10", "0.15");
-        const prim = createPhaseBandPrimitive(p.start_date, p.end_date, bandColor);
-        candleSeries.attachPrimitive(prim);
-        phaseBandPrims.current.push({ p: prim, series: candleSeries });
-      }
-
-      // Bottom strip (always)
       const series = chart.addSeries(LineSeries, {
         color, lineWidth: lw,
         priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
@@ -643,7 +633,6 @@ export default function StockPage() {
     const chart = createChart(container, {
       width,
       height: 560,
-      autoSize: false,
       layout: {
         background: { color: COLORS.bg },
         textColor: COLORS.text,
@@ -900,8 +889,6 @@ export default function StockPage() {
       observer.disconnect();
       // Remove moved logo + primitives
       if (tvLogoSlotRef.current) tvLogoSlotRef.current.innerHTML = "";
-      phaseBandPrims.current.forEach(({ p, series }) => { try { series.detachPrimitive(p); } catch {} });
-      phaseBandPrims.current = [];
       chart.remove();
       chartApiRef.current = null;
     };
@@ -1161,6 +1148,12 @@ export default function StockPage() {
           <div className={`relative ${chartFullscreen ? "flex-1 px-2 pb-2" : "w-full"}`}
             style={chartFullscreen ? {} : { height: 560 }}>
             <div ref={chartRef} className="w-full" style={{ height: "100%" }} />
+            {/* Phase bands — DOM overlay, zero chart impact */}
+            {phaseBands.map((band, i) => (
+              <div key={i} className="absolute top-0 bottom-0 pointer-events-none z-10"
+                style={{ left: band.x1, width: Math.max(band.x2 - band.x1, 1), backgroundColor: band.color }}
+              />
+            ))}
             {/* Crosshair tooltip — controlled by settings */}
             {showCrosshair && crosshair?.visible && (
               <div
