@@ -474,13 +474,19 @@ export default function StockPage() {
     };
     window.addEventListener("keydown", onKey);
     document.body.style.overflow = "hidden";
-    // Resize chart after CSS transition
-    const timer = setTimeout(() => {
-      chartApiRef.current?.applyOptions({
-        width: chartRef.current?.clientWidth || window.innerWidth,
-        height: chartRef.current?.parentElement?.clientHeight || window.innerHeight - 60,
-      });
-    }, 100);
+    // Resize chart after CSS transition — poll until container has height
+    const applyFS2 = () => {
+      const h = chartRef.current?.clientHeight;
+      if (h && h > 300) {
+        chartApiRef.current?.applyOptions({
+          width: chartRef.current?.clientWidth || window.innerWidth,
+          height: h,
+        });
+      } else {
+        requestAnimationFrame(applyFS2);
+      }
+    };
+    const timer = setTimeout(() => requestAnimationFrame(applyFS2), 100);
     return () => {
       window.removeEventListener("keydown", onKey);
       clearTimeout(timer);
@@ -491,13 +497,19 @@ export default function StockPage() {
   const toggleFullscreen = useCallback(() => {
     setChartFullscreen((prev) => {
       if (!prev) {
-        // Entering fullscreen — resize after frame
-        setTimeout(() => {
-          chartApiRef.current?.applyOptions({
-            width: chartRef.current?.clientWidth || window.innerWidth,
-            height: chartRef.current?.parentElement?.clientHeight || window.innerHeight - 60,
-          });
-        }, 50);
+        // Entering fullscreen — wait for flex layout then apply
+        const applyFS = () => {
+          const h = chartRef.current?.clientHeight;
+          if (h && h > 300) {
+            chartApiRef.current?.applyOptions({
+              width: chartRef.current?.clientWidth || window.innerWidth,
+              height: h,
+            });
+          } else {
+            requestAnimationFrame(applyFS);
+          }
+        };
+        setTimeout(() => requestAnimationFrame(applyFS), 100);
       } else {
         // Exiting — restore size
         setTimeout(() => {
@@ -1067,7 +1079,9 @@ export default function StockPage() {
           <div className={`flex items-center justify-between ${chartFullscreen ? "px-4 py-2 border-b border-gray-200 shrink-0" : "mb-3"}`}>
             <h3 className="font-semibold text-gray-700 flex items-center gap-2">
               <BarChart3 className="w-4 h-4 text-[#10a37f]" />
-              {chartFullscreen ? `专注模式 · ${info?.name || code}` : "K线图"}
+              {chartFullscreen
+                ? (info?.name && !/^\d{6}$/.test(info.name) ? `${info.name} · ${code}` : code)
+                : "K线图"}
               <span className="text-xs text-gray-400 font-normal">
                 {period === "daily" ? "日线" : "周线"} · 复权
               </span>
