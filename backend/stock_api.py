@@ -730,9 +730,15 @@ async def get_stock_intraday(
     code = _validate_code(code)
     try:
         loop = asyncio.get_event_loop()
-
-        # Try requested period first, fall back to 5min
         df = None
+
+        # Determine prefix for stock_zh_a_minute
+        if code.startswith("6"):
+            prefix = "sh" + code
+        else:
+            prefix = "sz" + code
+
+        # Try stock_zh_a_hist_min_em first (works for recent dates)
         for try_period in [period, "5"]:
             try:
                 df = await asyncio.wait_for(
@@ -751,6 +757,33 @@ async def get_stock_intraday(
                     break
             except Exception:
                 continue
+
+        # Fallback: stock_zh_a_minute (returns most recent trading day bundle)
+        if df is None or len(df) == 0:
+            try:
+                raw = await asyncio.wait_for(
+                    loop.run_in_executor(None, lambda: ak.stock_zh_a_minute(symbol=prefix, period="1")),
+                    timeout=20,
+                )
+                if raw is not None and len(raw) > 0:
+                    # Filter rows matching the requested date
+                    target_day = str(date)
+                    filtered = raw[raw["day"].astype(str).str.startswith(target_day)]
+                    if len(filtered) > 0:
+                        # Convert to same format as hist_min_em output
+                        import pandas as pd
+                        # day is like "2026-06-26 09:31:00", extract "09:31"
+                        time_series = filtered["day"].astype(str).str[11:16]
+                        df = pd.DataFrame({
+                            "时间": time_series,
+                            "开盘": filtered["open"],
+                            "最高": filtered["high"],
+                            "最低": filtered["low"],
+                            "收盘": filtered["close"],
+                            "成交量": filtered["volume"],
+                        })
+            except Exception:
+                pass
 
         if df is None or len(df) == 0:
             return {"status": "error", "message": f"{date} 无交易数据（休市日或数据不可用）"}

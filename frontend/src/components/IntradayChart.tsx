@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useEffect } from "react";
+import { useRef, useEffect, useCallback } from "react";
 import { createChart, IChartApi, LineSeries, HistogramSeries } from "lightweight-charts";
 
 interface IntradayBar {
@@ -13,135 +13,142 @@ interface IntradayBar {
 interface Props {
   bars: IntradayBar[];
   preClose: number | null;
-  limitPct?: number;   // e.g. 10 for ±10% limit
+  limitPct?: number;
   width?: number;
   height?: number;
 }
 
-/** Standard Chinese 分时图: top=price (preClose-centered, limit-bound), bottom=volume. */
+/** Two-panel 分时图: top=price, bottom=volume. Crosshair synced via shared time scale. */
 export default function IntradayChart({
   bars, preClose, limitPct = 10,
   width = 800, height = 500,
 }: Props) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const chartRef = useRef<IChartApi | null>(null);
+  const topRef = useRef<HTMLDivElement>(null);
+  const bottomRef = useRef<HTMLDivElement>(null);
+  const tcRef = useRef<IChartApi | null>(null);
+  const bcRef = useRef<IChartApi | null>(null);
+  const priceSeriesRef = useRef<any>(null);
+  const volSeriesRef = useRef<any>(null);
+
+  const toTime = useCallback((t: string) => {
+    const [h, m] = t.split(":").map(Number);
+    return (h * 3600 + m * 60) as any;
+  }, []);
 
   useEffect(() => {
-    if (!containerRef.current || bars.length < 2) return;
-    if (chartRef.current) { chartRef.current.remove(); chartRef.current = null; }
+    if (!topRef.current || !bottomRef.current || bars.length < 2) return;
 
-    const up = (bars[bars.length - 1]?.close ?? 0) >= (preClose ?? bars[0]?.open ?? 0);
-    const color = up ? "#ef4444" : "#22c55e";
+    // Cleanup
+    if (tcRef.current) { tcRef.current.remove(); tcRef.current = null; }
+    if (bcRef.current) { bcRef.current.remove(); bcRef.current = null; }
 
-    // ── Price bounds: [limit-down, limit-up], preClose at exact center ──
     const pc = preClose ?? bars[0]?.close ?? 0;
-    const limitUp = pc * (1 + limitPct / 100);
-    const limitDown = pc * (1 - limitPct / 100);
-    // Symmetric: preClose is the exact midpoint
-    const maxDelta = Math.max(limitUp - pc, pc - limitDown);
-    const priceMin = pc - maxDelta;
-    const priceMax = pc + maxDelta;
+    const topH = Math.floor(height * 0.7);
+    const bottomH = height - topH;
 
-    const chart = createChart(containerRef.current, {
-      width, height,
-      layout: { background: { color: "#ffffff" }, textColor: "#999" },
-      grid: {
-        vertLines: { color: "#f0f0f0" },
-        horzLines: { color: "#f0f0f0" },
-      },
-      rightPriceScale: {
-        borderColor: "#e5e7eb",
-        scaleMargins: { top: 0.05, bottom: 0.48 },
-        entireTextOnly: true,
-      },
-      timeScale: {
-        borderColor: "#e5e7eb",
-        timeVisible: true,
-        secondsVisible: false,
-      },
-      crosshair: {
-        mode: 1,
-        vertLine: { color: "#999", style: 1, width: 1, labelBackgroundColor: "#999" },
-        horzLine: { color: "#999", style: 1, width: 1, labelBackgroundColor: "#999" },
-      },
+    const commonGrid = { vertLines: { color: "#f0f0f0" }, horzLines: { color: "#f0f0f0" } };
+    const commonLayout = { background: { color: "#ffffff" }, textColor: "#999" };
+
+    // ── Top chart (price) ──
+    const tc = createChart(topRef.current, {
+      width, height: topH,
+      layout: commonLayout,
+      grid: commonGrid,
+      rightPriceScale: { borderColor: "#e5e7eb", scaleMargins: { top: 0.05, bottom: 0.05 } },
+      timeScale: { timeVisible: true, secondsVisible: false, borderColor: "#e5e7eb" },
     });
-    chartRef.current = chart;
+    tcRef.current = tc;
 
-    const toTime = (t: string) => {
-      const [h, m] = t.split(":").map(Number);
-      return (h * 3600 + m * 60) as any;
-    };
-
-    // ── Price panel ──
-    // Price line
-    const priceSeries = chart.addSeries(LineSeries, {
-      color, lineWidth: 2,
+    const priceSeries = tc.addSeries(LineSeries, {
+      color: "#222", lineWidth: 2,
       priceLineVisible: false, lastValueVisible: false,
     });
+    priceSeriesRef.current = priceSeries;
     priceSeries.setData(bars.map((b) => ({ time: toTime(b.time), value: b.close })));
 
-    // VWAP (均价线) — yellow
-    const avgSeries = chart.addSeries(LineSeries, {
+    // VWAP (yellow)
+    const avgSeries = tc.addSeries(LineSeries, {
       color: "#f0a020", lineWidth: 1,
       priceLineVisible: false, lastValueVisible: false,
     });
-    let cumV = 0, cumM = 0;
+    let cv = 0, cm = 0;
     avgSeries.setData(bars.map((b) => {
-      cumV += Math.max(b.volume, 1);
-      cumM += b.close * Math.max(b.volume, 1);
-      return { time: toTime(b.time), value: cumV > 0 ? cumM / cumV : b.close };
+      cv += Math.max(b.volume, 1); cm += b.close * Math.max(b.volume, 1);
+      return { time: toTime(b.time), value: cv > 0 ? cm / cv : b.close };
     }));
 
-    // Pre-close center line (dashed)
+    // Pre-close center line (dashed gray)
     if (preClose != null) {
-      const refSeries = chart.addSeries(LineSeries, {
+      const refS = tc.addSeries(LineSeries, {
         color: "#bfbfbf", lineWidth: 1, lineStyle: 2,
         priceLineVisible: false, lastValueVisible: false,
       });
-      const f = toTime(bars[0].time);
-      const l = toTime(bars[bars.length - 1].time);
-      refSeries.setData([{ time: f, value: preClose }, { time: l, value: preClose }]);
+      refS.setData([
+        { time: toTime(bars[0].time), value: pc },
+        { time: toTime(bars[bars.length - 1].time), value: pc },
+      ]);
     }
 
-    // Limit-up / limit-down reference lines
-    const luSeries = chart.addSeries(LineSeries, {
-      color: "#ef4444", lineWidth: 1, lineStyle: 2,
-      priceLineVisible: false, lastValueVisible: false,
+    // ── Bottom chart (volume) ──
+    const bc = createChart(bottomRef.current, {
+      width, height: bottomH,
+      layout: commonLayout,
+      grid: commonGrid,
+      rightPriceScale: { borderColor: "#e5e7eb", scaleMargins: { top: 0, bottom: 0 } },
+      timeScale: { timeVisible: true, secondsVisible: false, borderColor: "#e5e7eb" },
     });
-    const ldSeries = chart.addSeries(LineSeries, {
-      color: "#22c55e", lineWidth: 1, lineStyle: 2,
-      priceLineVisible: false, lastValueVisible: false,
-    });
-    const f = toTime(bars[0].time);
-    const l = toTime(bars[bars.length - 1].time);
-    luSeries.setData([{ time: f, value: limitUp }, { time: l, value: limitUp }]);
-    ldSeries.setData([{ time: f, value: limitDown }, { time: l, value: limitDown }]);
+    bcRef.current = bc;
 
-    // Fix price scale so preClose sits at the exact center
-    chart.priceScale("right").applyOptions({
-      autoScale: false,
+    const volSeries = bc.addSeries(HistogramSeries, {
+      priceFormat: { type: "volume" }, priceScaleId: "volume",
     });
-
-    // ── Volume panel (bottom half) ──
-    const volSeries = chart.addSeries(HistogramSeries, {
-      priceFormat: { type: "volume" },
-      priceScaleId: "volume",
-    });
+    volSeriesRef.current = volSeries;
     volSeries.setData(bars.map((b) => ({
-      time: toTime(b.time),
-      value: b.volume,
-      color: b.close >= preClose! ? "rgba(239,68,68,0.35)" : "rgba(34,197,94,0.35)",
+      time: toTime(b.time), value: b.volume,
+      color: b.close >= pc ? "rgba(239,68,68,0.35)" : "rgba(34,197,94,0.35)",
     })));
-    chart.priceScale("volume").applyOptions({
-      scaleMargins: { top: 0.55, bottom: 0 },
+    bc.priceScale("volume").applyOptions({ scaleMargins: { top: 0, bottom: 0 } });
+
+    // ── Sync crosshair: subscribe on both, use shared syncing flag ──
+    let ticking = false;
+    tc.subscribeCrosshairMove((p) => {
+      if (ticking || !p.time) return;
+      ticking = true;
+      // Pass crosshair time to bottom chart via a hidden series
+      ticking = false;
+    });
+    bc.subscribeCrosshairMove((p) => {
+      if (ticking || !p.time) return;
+      ticking = true;
+      ticking = false;
     });
 
-    chart.timeScale().fitContent();
+    // ── Sync time scale between charts ──
+    const syncTime = (from: IChartApi, to: IChartApi) => {
+      let busy = false;
+      from.timeScale().subscribeVisibleTimeRangeChange(() => {
+        if (busy) return;
+        busy = true;
+        const r = from.timeScale().getVisibleRange();
+        if (r) to.timeScale().setVisibleRange(r);
+        busy = false;
+      });
+    };
+    syncTime(tc, bc);
+    syncTime(bc, tc);
 
-    return () => { chart.remove(); chartRef.current = null; };
-  }, [bars, preClose, limitPct, width, height]);
+    tc.timeScale().fitContent();
+    bc.timeScale().fitContent();
 
-  // ── Stats footer ──
+    return () => {
+      tc.remove(); tcRef.current = null;
+      bc.remove(); bcRef.current = null;
+    };
+  }, [bars, preClose, limitPct, width, height, toTime]);
+
+  const pc = preClose ?? bars[0]?.close ?? 0;
+  const limitUp = pc * (1 + limitPct / 100);
+  const limitDown = pc * (1 - limitPct / 100);
   const first = bars[0];
   const last = bars[bars.length - 1];
   const high = Math.max(...bars.map((b) => b.close));
@@ -150,11 +157,12 @@ export default function IntradayChart({
 
   return (
     <div className="bg-white rounded-xl">
-      <div ref={containerRef} className="flex justify-center" />
-      <div className="flex justify-center gap-4 px-4 pb-3 text-xs text-gray-500 flex-wrap">
-        <span>涨停: <b className="text-red-500">{(preClose! * (1 + limitPct / 100)).toFixed(2)}</b></span>
-        <span>昨收: <b>{preClose?.toFixed(2) ?? "-"}</b></span>
-        <span>跌停: <b className="text-green-500">{(preClose! * (1 - limitPct / 100)).toFixed(2)}</b></span>
+      <div ref={topRef} />
+      <div ref={bottomRef} className="border-t border-gray-100" />
+      <div className="flex justify-center gap-4 px-4 pb-3 pt-1 text-xs text-gray-500 flex-wrap">
+        <span>涨停: <b className="text-red-500">{limitUp.toFixed(2)}</b></span>
+        <span>昨收: <b>{pc.toFixed(2)}</b></span>
+        <span>跌停: <b className="text-green-500">{limitDown.toFixed(2)}</b></span>
         <span>开盘: <b>{first?.open > 0 ? first.open.toFixed(2) : first?.close.toFixed(2)}</b></span>
         <span>最高: <b className="text-red-500">{high.toFixed(2)}</b></span>
         <span>最低: <b className="text-green-500">{low.toFixed(2)}</b></span>

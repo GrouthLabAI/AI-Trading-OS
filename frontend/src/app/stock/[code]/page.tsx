@@ -351,6 +351,7 @@ export default function StockPage() {
 
   // Intraday data cache: date → { bars, preClose }
   const intradayCache = useRef<Map<string, { bars: { time: string; close: number; open: number; volume: number }[]; preClose: number | null }>>(new Map());
+  const intradayDebounce = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [intradayBars, setIntradayBars] = useState<{ time: string; close: number; open: number; volume: number }[] | null>(null);
   const [intradayPreClose, setIntradayPreClose] = useState<number | null>(null);
 
@@ -912,7 +913,7 @@ export default function StockPage() {
       const bar = bars.find((b) => b.date === clickedDate);
       if (bar) {
         const label = `${info?.name || code} ${clickedDate}`;
-        setIntradayModal({ date: clickedDate, label, x: Math.max(60, window.innerWidth - 880), y: 100 });
+        setIntradayModal({ date: clickedDate, label, x: 10, y: 10 });
         // Trigger intraday fetch if not cached
         if (!intradayCache.current.has(clickedDate)) {
           fetch(`/api/stock/${code}/intraday?date=${clickedDate}`)
@@ -945,6 +946,7 @@ export default function StockPage() {
       if (!param.time || param.point === undefined) {
         setCrosshair(null);
         setHoveredBar(null);
+        if (intradayDebounce.current) { clearTimeout(intradayDebounce.current); intradayDebounce.current = null; }
         return;
       }
       const data = param.seriesData.get(candleSeries) as CandlestickData | undefined;
@@ -954,7 +956,8 @@ export default function StockPage() {
       const bar = bars.find((b) => b.date === dateStr);
       if (bar) setHoveredBar(bar);
 
-      // Fetch intraday data if not cached
+      // Fetch intraday data if not cached (debounced 300ms)
+      if (intradayDebounce.current) { clearTimeout(intradayDebounce.current); intradayDebounce.current = null; }
       if (intradayCache.current.has(dateStr)) {
         const cached = intradayCache.current.get(dateStr)!;
         setIntradayBars(cached.bars);
@@ -962,23 +965,24 @@ export default function StockPage() {
       } else {
         setIntradayBars(null);
         setIntradayPreClose(null);
-        fetch(`/api/stock/${code}/intraday?date=${dateStr}`)
-          .then((r) => r.json())
-          .then((json) => {
-            if (json.status === "ok") {
-              const ibars = (json.data.bars || []).map((b: any) => ({
-                time: b.time, close: b.close, open: b.open || b.close, volume: b.volume || 0,
-              }));
-              intradayCache.current.set(dateStr, {
-                bars: ibars,
-                preClose: json.data.pre_close,
-              });
-              // Only update if still hovering same date
-              setIntradayBars((prev) => prev ?? ibars);
-              setIntradayPreClose((prev) => prev ?? json.data.pre_close);
-            }
-          })
-          .catch(() => {});
+        intradayDebounce.current = setTimeout(() => {
+          fetch(`/api/stock/${code}/intraday?date=${dateStr}`)
+            .then((r) => r.json())
+            .then((json) => {
+              if (json.status === "ok") {
+                const ibars = (json.data.bars || []).map((b: any) => ({
+                  time: b.time, close: b.close, open: b.open || b.close, volume: b.volume || 0,
+                }));
+                intradayCache.current.set(dateStr, {
+                  bars: ibars,
+                  preClose: json.data.pre_close,
+                });
+                setIntradayBars(ibars);
+                setIntradayPreClose(json.data.pre_close);
+              }
+            })
+            .catch(() => {});
+        }, 300);
       }
 
       // Vol ratio from indicator data
@@ -1516,60 +1520,62 @@ export default function StockPage() {
 
       </div>
 
-      {/* ── Intraday Modal (draggable, no backdrop) ── */}
-      {intradayModal && (
-        <div
-          className="fixed z-50"
-          style={{ left: intradayModal.x, top: intradayModal.y }}
-          onMouseDown={(e) => {
-            if ((e.target as HTMLElement).closest(".drag-handle")) {
-              const startX = e.clientX - intradayModal.x;
-              const startY = e.clientY - intradayModal.y;
-              const onMove = (ev: MouseEvent) => {
-                setIntradayModal((prev) => prev ? { ...prev, x: ev.clientX - startX, y: ev.clientY - startY } : null);
-              };
-              const onUp = () => {
-                document.removeEventListener("mousemove", onMove);
-                document.removeEventListener("mouseup", onUp);
-              };
-              document.addEventListener("mousemove", onMove);
-              document.addEventListener("mouseup", onUp);
-            }
-          }}
-        >
-          <div className="bg-white rounded-2xl shadow-2xl" style={{ width: Math.min(window.innerWidth - 60, 820) }}>
-            <div className="flex items-center justify-between px-5 py-3 border-b border-gray-200 drag-handle cursor-move select-none">
-              <h3 className="text-sm font-semibold text-gray-800">{intradayModal.label} 分时图</h3>
-              <button onClick={() => setIntradayModal(null)} className="p-1 rounded hover:bg-gray-100 text-gray-400">
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-            <div className="p-2">
-              {(() => {
-                const cached = intradayCache.current.get(intradayModal.date);
-                if (!cached) {
-                  return (
-                    <div className="flex items-center justify-center py-20">
-                      <Loader2 className="w-6 h-6 animate-spin text-gray-400" />
-                      <span className="ml-2 text-sm text-gray-400">加载分时数据...</span>
-                    </div>
-                  );
-                }
-                const limitPct = bars.length > 0 ? (bars[0] as any).limit_pct ?? 10 : 10;
-                return (
+      {/* ── Intraday Modal (draggable, no backdrop, follows crosshair) ── */}
+      {intradayModal && (() => {
+        // Follow crosshair date when modal is open, fallback to clicked date
+        const activeDate = crosshair?.date || intradayModal.date;
+        const cached = intradayCache.current.get(activeDate);
+        const ibars = activeDate === crosshair?.date ? intradayBars : (cached?.bars ?? null);
+        const iPreClose = activeDate === crosshair?.date ? intradayPreClose : (cached?.preClose ?? null);
+        const stockLabel = info?.name || code;
+
+        return (
+          <div
+            className="fixed z-50"
+            style={{ left: intradayModal.x, top: intradayModal.y }}
+            onMouseDown={(e) => {
+              if ((e.target as HTMLElement).closest(".drag-handle")) {
+                const startX = e.clientX - intradayModal.x;
+                const startY = e.clientY - intradayModal.y;
+                const onMove = (ev: MouseEvent) => {
+                  setIntradayModal((prev) => prev ? { ...prev, x: ev.clientX - startX, y: ev.clientY - startY } : null);
+                };
+                const onUp = () => {
+                  document.removeEventListener("mousemove", onMove);
+                  document.removeEventListener("mouseup", onUp);
+                };
+                document.addEventListener("mousemove", onMove);
+                document.addEventListener("mouseup", onUp);
+              }
+            }}
+          >
+            <div className="bg-white rounded-2xl shadow-2xl" style={{ width: Math.min(window.innerWidth - 60, 820) }}>
+              <div className="flex items-center justify-between px-5 py-3 border-b border-gray-200 drag-handle cursor-move select-none">
+                <h3 className="text-sm font-semibold text-gray-800">{stockLabel} {activeDate} 分时图</h3>
+                <button onClick={() => setIntradayModal(null)} className="p-1 rounded hover:bg-gray-100 text-gray-400">
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+              <div className="p-2" style={{ minHeight: 600 }}>
+                {ibars && ibars.length >= 2 ? (
                   <IntradayChartFull
-                    bars={cached.bars}
-                    preClose={cached.preClose}
-                    limitPct={limitPct}
+                    bars={ibars}
+                    preClose={iPreClose}
+                    limitPct={bars.length > 0 ? (bars[0] as any).limit_pct ?? 10 : 10}
                     width={Math.min(window.innerWidth - 60, 820)}
-                    height={460}
+                    height={580}
                   />
-                );
-              })()}
+                ) : (
+                  <div className="flex items-center justify-center flex-col" style={{ height: 580 }}>
+                    <Loader2 className="w-6 h-6 animate-spin text-gray-400 mb-2" />
+                    <span className="text-sm text-gray-400">加载分时数据...</span>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* AI Chat Panel — right side layout */}
       <AIChatPanel code={code} stockName={info?.name && !/^\d{6}$/.test(info.name) ? info.name : code} analysis={aiResult} />
