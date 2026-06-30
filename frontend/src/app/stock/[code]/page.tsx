@@ -2,7 +2,8 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { Loader2, Search, TrendingUp, TrendingDown, BarChart3, Target, Shield, Zap, ExternalLink, ChevronRight, AlertTriangle, Maximize2, Minimize2, Settings } from "lucide-react";
+import { Loader2, Search, TrendingUp, TrendingDown, BarChart3, Target, Shield, Zap, ExternalLink, ChevronRight, AlertTriangle, Maximize2, Minimize2, Settings, X } from "lucide-react";
+import IntradayChartFull from "@/components/IntradayChart";
 import AIChatPanel from "./AIChatPanel";
 import { createChart, IChartApi, ISeriesApi, CandlestickData, HistogramData, Time, CrosshairMode, LineData, CandlestickSeries, HistogramSeries, LineSeries, createSeriesMarkers } from "lightweight-charts";
 
@@ -302,6 +303,8 @@ export default function StockPage() {
   const [chartFullscreen, setChartFullscreen] = useState(false);
   const [showCrosshair, setShowCrosshair] = useState(false);
   const [showSR, setShowSR] = useState(false); // support/resistance toggle
+  const [showTechSignals, setShowTechSignals] = useState(false); // technical signal markers
+  const [intradayModal, setIntradayModal] = useState<{ date: string; label: string; x: number; y: number } | null>(null);
   const [pinnedPhases, setPinnedPhases] = useState<Set<string>>(new Set());
   const [phaseBands, setPhaseBands] = useState<{ x1: number; x2: number; color: string }[]>([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -409,13 +412,6 @@ export default function StockPage() {
     if (validCode) fetchData();
     else setLoading(false);
   }, [fetchData, validCode]);
-
-  // Draw S/R lines when AI result arrives (chart already rendered)
-  useEffect(() => {
-    if (chartApiRef.current && aiResult && bars.length > 0) {
-      drawWyckoffOverlays(chartApiRef.current, bars, aiResult, candleSeriesRef.current, showSR, pinnedPhases);
-    }
-  }, [aiResult, showSR]); // eslint-disable-line
 
   // Phase band coordinates (DOM overlay, no primitive — no height change)
   const updatePhaseBands = useCallback(() => {
@@ -798,6 +794,145 @@ export default function StockPage() {
       drawWyckoffOverlays(chart, bars, aiResult, candleSeries, showSR, pinnedPhases);
     }
 
+    // ── Technical signal markers ──
+    if (showTechSignals && indicators?.per_bar && indicators.per_bar.length > 0) {
+      const techMarkers: any[] = [];
+      const perBar = indicators.per_bar;
+
+      for (let i = 1; i < bars.length; i++) {
+        const bar = bars[i];
+        const prev = perBar[i - 1];
+        const curr = perBar[i];
+        if (!bar?.date || !curr) continue;
+        const cdif = curr.macd_dif ?? 0;
+        const cdea = curr.macd_dea ?? 0;
+        const crsi = curr.rsi ?? 50;
+        const pdif = prev?.macd_dif ?? 0;
+        const pdea = prev?.macd_dea ?? 0;
+        const prsi = prev?.rsi ?? 50;
+
+        // MACD golden cross (DIF crosses above DEA)
+        if (cdif > cdea && pdif <= pdea) {
+          techMarkers.push({
+            time: bar.date as Time,
+            position: "belowBar",
+            color: "#22c55e",
+            shape: "arrowUp",
+            text: "金叉",
+            size: 1.5,
+          });
+        }
+        // MACD death cross (DIF crosses below DEA)
+        if (cdif < cdea && pdif >= pdea) {
+          techMarkers.push({
+            time: bar.date as Time,
+            position: "aboveBar",
+            color: "#ef4444",
+            shape: "arrowDown",
+            text: "死叉",
+            size: 1.5,
+          });
+        }
+        // RSI oversold (< 30)
+        if (crsi < 30 && prsi >= 30) {
+          techMarkers.push({
+            time: bar.date as Time,
+            position: "belowBar",
+            color: "#4ade80",
+            shape: "arrowUp",
+            text: "RSI超卖",
+            size: 1.5,
+          });
+        }
+        // RSI overbought (> 70)
+        if (crsi > 70 && prsi <= 70) {
+          techMarkers.push({
+            time: bar.date as Time,
+            position: "aboveBar",
+            color: "#f87171",
+            shape: "arrowDown",
+            text: "RSI超买",
+            size: 1.5,
+          });
+        }
+        // Volume breakout: vol > 2x 5-day avg + close > prev close
+        const vol5avg = bars.slice(Math.max(0, i - 4), i + 1).reduce((s, b) => s + (b.volume || 0), 0) / 5;
+        if (bar.volume > vol5avg * 2 && bar.close > bars[i - 1].close) {
+          techMarkers.push({
+            time: bar.date as Time,
+            position: "belowBar",
+            color: "#f59e0b",
+            shape: "circle",
+            text: "放量",
+            size: 1.5,
+          });
+        }
+      }
+
+      // MA5/MA20 crossover markers
+      const ma5 = bars.map((b, i) => {
+        if (i < 4) return null;
+        const sum = bars.slice(i - 4, i + 1).reduce((s, x) => s + x.close, 0);
+        return sum / 5;
+      });
+      const ma20 = bars.map((b, i) => {
+        if (i < 19) return null;
+        const sum = bars.slice(i - 19, i + 1).reduce((s, x) => s + x.close, 0);
+        return sum / 20;
+      });
+      for (let i = 20; i < bars.length; i++) {
+        if (!bars[i]?.date) continue;
+        if (ma5[i] && ma20[i] && ma5[i - 1] && ma20[i - 1]) {
+          // Golden cross: MA5 crosses above MA20
+          const m5 = ma5[i]!; const m20 = ma20[i]!;
+          const m5p = ma5[i - 1]!; const m20p = ma20[i - 1]!;
+          if (m5 > m20 && m5p <= m20p) {
+            techMarkers.push({
+              time: bars[i].date as Time,
+              position: "belowBar",
+              color: "#22c55e",
+              shape: "arrowUp",
+              text: "MA金叉",
+              size: 1.5,
+            });
+          }
+        }
+      }
+
+      if (techMarkers.length > 0 && candleSeries) {
+        createSeriesMarkers(candleSeries, techMarkers as any);
+      }
+    }
+
+    // ── Click handler: open intraday modal ──
+    chart.subscribeClick((param) => {
+      if (!param.time) return;
+      const clickedDate = param.time as string;
+      // Find the bar
+      const bar = bars.find((b) => b.date === clickedDate);
+      if (bar) {
+        const label = `${info?.name || code} ${clickedDate}`;
+        setIntradayModal({ date: clickedDate, label, x: Math.max(60, window.innerWidth - 880), y: 100 });
+        // Trigger intraday fetch if not cached
+        if (!intradayCache.current.has(clickedDate)) {
+          fetch(`/api/stock/${code}/intraday?date=${clickedDate}`)
+            .then((r) => r.json())
+            .then((json) => {
+              if (json.status === "ok") {
+                const ibars = (json.data.bars || []).map((b: any) => ({
+                  time: b.time, close: b.close, open: b.open || b.close, volume: b.volume || 0,
+                }));
+                intradayCache.current.set(clickedDate, {
+                  bars: ibars,
+                  preClose: json.data.pre_close,
+                });
+                setIntradayModal((prev) => prev?.date === clickedDate ? { ...prev } : prev);
+              }
+            }).catch(() => {});
+        }
+      }
+    });
+
     // Handle resize
     const handleResize = () => {
       chart.applyOptions({ width: container.clientWidth, height: 560 });
@@ -892,7 +1027,7 @@ export default function StockPage() {
       chart.remove();
       chartApiRef.current = null;
     };
-  }, [bars]);
+  }, [bars, showTechSignals, showSR, aiResult, pinnedPhases, indicators]);
 
   // ── Render ───────────────────────────────────────────────────────
 
@@ -1114,6 +1249,12 @@ export default function StockPage() {
                         className="w-3.5 h-3.5 rounded accent-[#10a37f]" />
                       绘制支撑/阻力线
                     </label>
+                    <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+                      <input type="checkbox" checked={showTechSignals}
+                        onChange={(e) => setShowTechSignals(e.target.checked)}
+                        className="w-3.5 h-3.5 rounded accent-[#10a37f]" />
+                      📌 技术指标信号标记
+                    </label>
                   </div>
                 )}
               </div>
@@ -1151,6 +1292,31 @@ export default function StockPage() {
               </div>
             );
           })()}
+          {/* Indicator bar */}
+          {indicators && (
+            <div className={`flex items-center gap-4 text-xs border-b border-gray-100 py-1 flex-wrap ${chartFullscreen ? "px-4" : "px-1"}`}>
+              <span className="text-gray-400">指标</span>
+              <span className="text-gray-500">
+                MACD <span className="font-mono" style={{color: (indicators.macd_dif ?? 0) >= (indicators.macd_dea ?? 0) ? UP_COLOR : DOWN_COLOR}}>
+                  DIF {indicators.macd_dif?.toFixed(3) ?? "—"}
+                </span>
+                {" "}
+                <span className="font-mono text-gray-500">DEA {indicators.macd_dea?.toFixed(3) ?? "—"}</span>
+                {" "}
+                <span className="font-mono" style={{color: (indicators.macd_hist ?? 0) >= 0 ? UP_COLOR : DOWN_COLOR}}>
+                  {indicators.macd_hist != null ? (indicators.macd_hist >= 0 ? "+" : "") + indicators.macd_hist.toFixed(3) : "—"}
+                </span>
+              </span>
+              <span className="text-gray-500">
+                RSI <span className={`font-mono font-medium ${(indicators.rsi ?? 50) > 70 ? "text-red-500" : (indicators.rsi ?? 50) < 30 ? "text-green-500" : "text-gray-700"}`}>
+                  {indicators.rsi?.toFixed(1) ?? "—"}
+                </span>
+              </span>
+              <span className="text-gray-500">
+                量比 <span className="font-mono text-gray-700">{indicators.vol_ratio != null ? indicators.vol_ratio.toFixed(2) : "—"}</span>
+              </span>
+            </div>
+          )}
           {/* Chart body */}
           <div className={`relative ${chartFullscreen ? "flex-1 px-2 pb-2" : "w-full"}`}
             style={chartFullscreen ? {} : { height: 560 }}>
@@ -1349,6 +1515,61 @@ export default function StockPage() {
       </div>
 
       </div>
+
+      {/* ── Intraday Modal (draggable, no backdrop) ── */}
+      {intradayModal && (
+        <div
+          className="fixed z-50"
+          style={{ left: intradayModal.x, top: intradayModal.y }}
+          onMouseDown={(e) => {
+            if ((e.target as HTMLElement).closest(".drag-handle")) {
+              const startX = e.clientX - intradayModal.x;
+              const startY = e.clientY - intradayModal.y;
+              const onMove = (ev: MouseEvent) => {
+                setIntradayModal((prev) => prev ? { ...prev, x: ev.clientX - startX, y: ev.clientY - startY } : null);
+              };
+              const onUp = () => {
+                document.removeEventListener("mousemove", onMove);
+                document.removeEventListener("mouseup", onUp);
+              };
+              document.addEventListener("mousemove", onMove);
+              document.addEventListener("mouseup", onUp);
+            }
+          }}
+        >
+          <div className="bg-white rounded-2xl shadow-2xl" style={{ width: Math.min(window.innerWidth - 60, 820) }}>
+            <div className="flex items-center justify-between px-5 py-3 border-b border-gray-200 drag-handle cursor-move select-none">
+              <h3 className="text-sm font-semibold text-gray-800">{intradayModal.label} 分时图</h3>
+              <button onClick={() => setIntradayModal(null)} className="p-1 rounded hover:bg-gray-100 text-gray-400">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-2">
+              {(() => {
+                const cached = intradayCache.current.get(intradayModal.date);
+                if (!cached) {
+                  return (
+                    <div className="flex items-center justify-center py-20">
+                      <Loader2 className="w-6 h-6 animate-spin text-gray-400" />
+                      <span className="ml-2 text-sm text-gray-400">加载分时数据...</span>
+                    </div>
+                  );
+                }
+                const limitPct = bars.length > 0 ? (bars[0] as any).limit_pct ?? 10 : 10;
+                return (
+                  <IntradayChartFull
+                    bars={cached.bars}
+                    preClose={cached.preClose}
+                    limitPct={limitPct}
+                    width={Math.min(window.innerWidth - 60, 820)}
+                    height={460}
+                  />
+                );
+              })()}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* AI Chat Panel — right side layout */}
       <AIChatPanel code={code} stockName={info?.name && !/^\d{6}$/.test(info.name) ? info.name : code} analysis={aiResult} />

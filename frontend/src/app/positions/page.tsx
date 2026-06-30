@@ -121,7 +121,7 @@ export default function PositionsPage() {
 
   return (
     <div className="bg-[#f7f7f8] min-h-screen">
-      <main className="max-w-7xl mx-auto px-4 py-6 space-y-6">
+      <main className="max-w-8xl mx-auto px-4 py-6 space-y-6">
         {/* Summary */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           <StatCard label="持仓数量" value={`${holdingPositions.length} 只`} icon={<Wallet className="w-4 h-4" />} color="text-blue-500" />

@@ -53,6 +53,15 @@ class StockPick(Base):
     market_open_price: Mapped[float] = mapped_column(Float, default=0.0)
     actual_entry_price: Mapped[float] = mapped_column(Float, nullable=True)
     delta_from_screen: Mapped[float] = mapped_column(Float, default=0.0)
+    # ── Enrichment from limit-up pool ──
+    first_limit_time: Mapped[str] = mapped_column(String(10), default="")      # 首次封板时间
+    open_count: Mapped[int] = mapped_column(Integer, default=0)                 # 炸板次数
+    lu_turnover: Mapped[float] = mapped_column(Float, default=0.0)             # 换手率
+    amplitude: Mapped[float] = mapped_column(Float, default=0.0)               # 振幅
+    volume_ratio: Mapped[float] = mapped_column(Float, default=0.0)            # 量比
+    total_market_cap: Mapped[float] = mapped_column(Float, default=0.0)        # 总市值
+    sector: Mapped[str] = mapped_column(String(50), default="")                 # 所属行业
+    board_pattern: Mapped[str] = mapped_column(String(20), default="")          # 涨停统计(连板数)
     create_time: Mapped[datetime.datetime] = mapped_column(DateTime, default=datetime.datetime.now)
     expire_time: Mapped[datetime.datetime] = mapped_column(DateTime, nullable=True)
 
@@ -184,3 +193,34 @@ class SystemConfig(Base):
     config_key: Mapped[str] = mapped_column(String(100), unique=True)
     config_value: Mapped[str] = mapped_column(Text)
     description: Mapped[str] = mapped_column(String(255), default="")
+
+
+class ChatMessage(Base):
+    """AI助手对话记录 — 按股票代码隔离存储"""
+    __tablename__ = "chat_messages"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    stock_code: Mapped[str] = mapped_column(String(10), index=True, comment="股票代码")
+    role: Mapped[str] = mapped_column(String(16), comment="user | assistant")
+    content: Mapped[str] = mapped_column(Text, comment="消息内容(Markdown)")
+    create_time: Mapped[datetime.datetime] = mapped_column(DateTime, default=datetime.datetime.now)
+
+
+class WatchlistStock(Base):
+    """自选股"""
+    __tablename__ = "watchlist_stocks"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    code: Mapped[str] = mapped_column(String(12), index=True, comment="股票代码")
+    name: Mapped[str] = mapped_column(String(32), comment="股票名称")
+    add_price: Mapped[float] = mapped_column(Float, default=0.0, comment="加入自选时的价格")
+    create_time: Mapped[datetime.datetime] = mapped_column(DateTime, default=datetime.datetime.now, comment="加入自选时间")
+
+
+class StockSector(Base):
+    """股票行业分类 — 从AKShare同步，每周刷新"""
+    __tablename__ = "stock_sector"
+
+    code: Mapped[str] = mapped_column(String(12), primary_key=True, comment="股票代码")
+    sector: Mapped[str] = mapped_column(String(50), default="", comment="所属行业")
+    update_time: Mapped[datetime.datetime] = mapped_column(DateTime, default=datetime.datetime.now, comment="刷新时间")

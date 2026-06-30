@@ -194,7 +194,7 @@ export default function BacktestPage() {
 
   return (
     <div className="bg-[#f7f7f8] min-h-screen">
-      <div className="max-w-7xl mx-auto px-4 py-6 space-y-6">
+      <div className="max-w-8xl mx-auto px-4 py-6 space-y-6">
         <h2 className="text-lg font-semibold text-gray-700 flex items-center gap-2">
           <TrendingUp className="w-5 h-5 text-[#10a37f]" /> 策略回测
         </h2>

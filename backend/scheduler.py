@@ -224,16 +224,8 @@ class Scheduler:
             event_name="trading_day.pre_market.start",
         )
 
-        # 18:00 — Post-market: overnight pre-screen + review
-        self.add_cron_job(
-            "post_market_screen",
-            _emit_event_wrapper,
-            hour=18,
-            minute=0,
-            day_of_week="mon-fri",
-            name="盘后初筛+复盘",
-            event_name="trading_day.post_market.start",
-        )
+        # Post-market screening is triggered by trading_day state machine (15:00).
+        # No duplicate cron needed here — _on_post_market_start handles it.
 
         logger.info("Scheduler: registered standard trading-day cron jobs")
 

@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, useRef, useEffect, useCallback, useMemo } from "react";
-import { MessageSquare, X, Send, Loader2, ChevronLeft } from "lucide-react";
+import { useState, useRef, useEffect, useCallback } from "react";
+import { MessageSquare, X, Send, Loader2 } from "lucide-react";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 
@@ -27,6 +27,7 @@ export default function AIChatPanel({ code, stockName, analysis }: Props) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [loadingHistory, setLoadingHistory] = useState(false);
   const [panelWidth, setPanelWidth] = useState(() => {
     try { return parseInt(localStorage.getItem("ai-panel-width") || "380", 10); } catch { return 380; }
   });
@@ -73,6 +74,47 @@ export default function AIChatPanel({ code, stockName, analysis }: Props) {
     if (open) setTimeout(() => inputRef.current?.focus(), 100);
   }, [open]);
 
+  // ── History persistence ────────────────────────────────────────
+
+  const saveMessages = useCallback(async (msgs: ChatMessage[]) => {
+    try {
+      await fetch("/api/chat/save", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ stock_code: code, messages: msgs }),
+      });
+    } catch (e) {
+      console.error("保存对话历史失败:", e);
+    }
+  }, [code]);
+
+  const loadHistory = useCallback(async () => {
+    setLoadingHistory(true);
+    try {
+      const res = await fetch(`/api/chat/history/${code}?page=1&page_size=50`);
+      const json = await res.json();
+      if (json.status === "ok" && json.data.messages.length > 0) {
+        setMessages(json.data.messages.map((m: any) => ({ role: m.role, content: m.content })));
+      } else {
+        setMessages([]);
+      }
+    } catch {
+      setMessages([]);
+    } finally {
+      setLoadingHistory(false);
+    }
+  }, [code]);
+
+  const handleClear = useCallback(async () => {
+    try { await fetch(`/api/chat/clear/${code}`, { method: "DELETE" }); } catch {}
+    setMessages([]);
+  }, [code]);
+
+  // Load history when stock changes
+  useEffect(() => {
+    loadHistory();
+  }, [loadHistory]);
+
   const sendMessage = useCallback(async (text: string) => {
     if (!text.trim() || loading) return;
     const userMsg: ChatMessage = { role: "user", content: text.trim() };
@@ -89,7 +131,9 @@ export default function AIChatPanel({ code, stockName, analysis }: Props) {
       });
       const json = await res.json();
       if (json.status === "ok") {
-        setMessages((prev) => [...prev, { role: "assistant", content: json.reply }]);
+        const assistantMsg: ChatMessage = { role: "assistant", content: json.reply };
+        setMessages((prev) => [...prev, assistantMsg]);
+        saveMessages([userMsg, assistantMsg]);
       } else {
         setMessages((prev) => [...prev, { role: "assistant", content: "抱歉，AI 助手暂时不可用。" }]);
       }
@@ -98,14 +142,9 @@ export default function AIChatPanel({ code, stockName, analysis }: Props) {
     } finally {
       setLoading(false);
     }
-  }, [code, messages, loading]);
+  }, [code, messages, loading, analysis, saveMessages]);
 
   const quickAsk = (q: string) => sendMessage(q);
-
-  // Clear conversation when stock changes
-  useEffect(() => {
-    setMessages([]);
-  }, [code]);
 
   // ── Closed state: slim toggle strip ──
   if (!open) {
@@ -136,13 +175,20 @@ export default function AIChatPanel({ code, stockName, analysis }: Props) {
           <span className="text-sm font-semibold text-gray-700">AI 助手</span>
           <span className="text-xs text-gray-400">{stockName} {code}</span>
         </div>
+        {messages.length > 0 && (
+          <button onClick={handleClear} title="清空对话"
+            className="p-1 rounded hover:bg-gray-100 text-gray-400 hover:text-red-500 transition-colors text-xs"
+          >
+            清空
+          </button>
+        )}
         <button onClick={() => setOpen(false)} className="p-1 rounded hover:bg-gray-100 text-gray-400">
           <X className="w-4 h-4" />
         </button>
       </div>
 
-      {/* Quick prompts */}
-      {messages.length === 0 && (
+      {/* Quick prompts — only when no messages and done loading */}
+      {messages.length === 0 && !loadingHistory && (
         <div className="px-4 py-3 border-b border-gray-100 shrink-0 space-y-1.5">
           <p className="text-xs text-gray-400 mb-1">快捷提问:</p>
           {[
@@ -162,10 +208,15 @@ export default function AIChatPanel({ code, stockName, analysis }: Props) {
 
       {/* Messages */}
       <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
-        {messages.length === 0 && (
+        {messages.length === 0 && !loadingHistory && (
           <p className="text-sm text-gray-400 text-center py-8">
             我是该股票的 AI 分析助手，可以回答关于 {stockName}({code}) 的任何问题。
           </p>
+        )}
+        {loadingHistory && (
+          <div className="flex items-center justify-center py-8 gap-2 text-sm text-gray-400">
+            <Loader2 className="w-4 h-4 animate-spin" /> 加载历史中...
+          </div>
         )}
         {messages.map((m, i) => (
           <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>

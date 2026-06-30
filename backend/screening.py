@@ -59,6 +59,9 @@ _LIMIT_UP_KEY_MAP = {
     "所属行业": "industry",
 }
 
+# Fields to enrich from spot cache at display time (not in limit-up pool)
+_SPOT_ENRICH_KEYS = ["振幅", "量比"]
+
 
 def _normalize_row(row: dict, key_map: dict) -> dict:
     """Map Chinese column names to English keys. Passes through existing English keys."""
@@ -297,6 +300,11 @@ async def run_night_screening() -> dict:
                 "fb_reason": fb_reason,
                 "vol_reason": vol_reason,
                 "sector_reason": sector_reason,
+                # Enrichment from limit-up pool
+                "first_seal_time": str(stock.get("first_seal_time", "")),
+                "open_count": int(stock.get("open_count", 0)),
+                "limit_up_stat": str(stock.get("limit_up_stat", "")),
+                "total_mv": float(stock.get("total_mv", 0)),
             })
 
     # Sort by score descending
@@ -334,6 +342,13 @@ async def run_night_screening() -> dict:
                 morning_score=0.0,
                 buy_price=q["close_price"],
                 reason=f"{q['fb_reason']}; {q['vol_reason']}; 封板:{q.get('seal_quality', '未知')}; 板块:{q.get('sector_reason', '未知')}",
+                # Enrichment
+                first_limit_time=q.get("first_seal_time", ""),
+                open_count=q.get("open_count", 0),
+                lu_turnover=q.get("turnover", 0),
+                total_market_cap=q.get("total_mv", 0),
+                sector=q.get("sector", ""),
+                board_pattern=q.get("limit_up_stat", ""),
                 create_time=datetime.datetime.now(),
                 expire_time=datetime.datetime.now() + datetime.timedelta(hours=24),
             )
@@ -366,20 +381,48 @@ async def run_morning_calibration() -> dict:
 
     Returns summary dict.
     """
-    trade_date = datetime.date.today()
     start_time = datetime.datetime.now()
 
-    logger.info(f"Screening [morning]: calibrating for {trade_date}")
-
-    # 1. Load night_screened candidates
+    # 1. Find the most recent night_screened pool (may span weekends)
     async with async_session() as db:
-        result = await db.execute(
-            select(StockPick).where(
-                StockPick.trade_date == trade_date,
-                StockPick.candidate_status == "night_screened",
-            )
+        # Find the latest CandidatePool with stage=night_screen
+        pool_result = await db.execute(
+            select(CandidatePool)
+            .where(CandidatePool.stage == "night_screen")
+            .order_by(CandidatePool.create_time.desc())
+            .limit(1)
         )
-        candidates = result.scalars().all()
+        latest_pool = pool_result.scalar_one_or_none()
+
+        if latest_pool is None:
+            # Fallback: iterate backward through dates to find night_screened candidates
+            today = datetime.date.today()
+            candidates = []
+            for offset in range(10):
+                attempt = today - datetime.timedelta(days=offset)
+                result = await db.execute(
+                    select(StockPick).where(
+                        StockPick.trade_date == attempt,
+                        StockPick.candidate_status == "night_screened",
+                    )
+                )
+                candidates = result.scalars().all()
+                if candidates:
+                    trade_date = attempt
+                    break
+            else:
+                trade_date = today
+        else:
+            trade_date = latest_pool.trade_date
+            result = await db.execute(
+                select(StockPick).where(
+                    StockPick.pool_id == latest_pool.pool_id,
+                    StockPick.candidate_status == "night_screened",
+                )
+            )
+            candidates = result.scalars().all()
+
+    logger.info(f"Screening [morning]: calibrating {len(candidates)} candidates from {trade_date}")
 
     if not candidates:
         logger.info("Screening [morning]: no night_screened candidates to calibrate")
@@ -470,9 +513,11 @@ async def get_candidate_pool(trade_date: Optional[datetime.date] = None) -> Dict
     """
     async with async_session() as db:
         if trade_date is None:
-            # Try today first, then fall back to yesterday
+            # Try today first, then fall back through recent days (up to 10)
             today = datetime.date.today()
-            for attempt_date in [today, today - datetime.timedelta(days=1)]:
+            found_date = None
+            for offset in range(10):
+                attempt_date = today - datetime.timedelta(days=offset)
                 check = await db.execute(
                     select(StockPick.id).where(
                         StockPick.trade_date == attempt_date,
@@ -483,8 +528,11 @@ async def get_candidate_pool(trade_date: Optional[datetime.date] = None) -> Dict
                     ).limit(1)
                 )
                 if check.scalar():
-                    trade_date = attempt_date
+                    found_date = attempt_date
                     break
+
+            if found_date:
+                trade_date = found_date
             else:
                 trade_date = today
 
@@ -507,6 +555,23 @@ async def get_candidate_pool(trade_date: Optional[datetime.date] = None) -> Dict
         )
         pools = pool_result.scalars().all()
 
+    # Enrich with spot data for 振幅 and 量比 (not in limit-up pool)
+    spot_map = {}
+    try:
+        from backend.stock_api import _cache_get
+        spot_df = _cache_get("spot_all", ttl=28800)
+        if spot_df is not None and len(spot_df) > 0:
+            for _, row in spot_df.iterrows():
+                c = str(row.get("代码", ""))
+                if c:
+                    spot_map[c] = row
+    except Exception:
+        pass
+
+    def _f(v, default=0.0):
+        try: return float(v) if v else default
+        except: return default
+
     return {
         "trade_date": trade_date.isoformat(),
         "total_candidates": len(picks),
@@ -525,6 +590,16 @@ async def get_candidate_pool(trade_date: Optional[datetime.date] = None) -> Dict
                 "target_price": p.target_price,
                 "position_ratio": p.position_ratio,
                 "reason": p.reason,
+                # Enrichment
+                "first_limit_time": p.first_limit_time or "",
+                "open_count": p.open_count or 0,
+                "lu_turnover": p.lu_turnover or 0.0,
+                "total_market_cap": p.total_market_cap or 0.0,
+                "sector": p.sector or "",
+                "board_pattern": p.board_pattern or "",
+                # From spot cache
+                "amplitude": _f(spot_map[p.code].get("振幅", 0)) if p.code in spot_map else 0.0,
+                "volume_ratio": _f(spot_map[p.code].get("量比", 0)) if p.code in spot_map else 0.0,
             }
             for p in picks
         ],

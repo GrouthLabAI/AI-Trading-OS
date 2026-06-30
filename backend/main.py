@@ -16,6 +16,8 @@ from backend.backtest_api import router as backtest_router
 from backend.scheduler_api import router as scheduler_router
 from backend.candidate_api import router as candidate_router
 from backend.stock_api import router as stock_router
+from backend.chat_api import router as chat_history_router
+from backend.watchlist_api import router as watchlist_router
 
 
 @asynccontextmanager
@@ -46,6 +48,18 @@ async def lifespan(app: FastAPI):
     from backend.stock_api import warm_spot_cache, _load_name_cache
     _asyncio.create_task(_load_name_cache())
     _asyncio.create_task(warm_spot_cache())
+
+    # Sync sector data to DB at startup (non-blocking), then weekly on Monday 8am
+    from backend.watchlist_api import sync_sector_data
+    _asyncio.create_task(sync_sector_data())
+    scheduler.add_cron_job(
+        "weekly_sector_sync",
+        sync_sector_data,
+        hour=8,
+        minute=15,
+        day_of_week="mon",
+        name="行业分类每周同步",
+    )
 
     # Start the trading day state machine
     from backend.trading_day import trading_day
@@ -97,6 +111,8 @@ app.include_router(backtest_router)
 app.include_router(scheduler_router)
 app.include_router(candidate_router)
 app.include_router(stock_router)
+app.include_router(chat_history_router)
+app.include_router(watchlist_router)
 
 
 # Health check

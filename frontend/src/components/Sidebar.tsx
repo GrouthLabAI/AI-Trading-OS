@@ -3,11 +3,12 @@
 import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Sparkles, MessageSquare, BarChart3, Wallet, FileText, TrendingUp, Search, ChevronLeft, ChevronRight } from "lucide-react";
+import { Sparkles, MessageSquare, BarChart3, Wallet, FileText, TrendingUp, Search, Star, ChevronLeft, ChevronRight } from "lucide-react";
 
 const NAV_ITEMS = [
   { href: "/", label: "AI 对话", icon: MessageSquare },
   { href: "/dashboard", label: "市场驾驶舱", icon: BarChart3 },
+  { href: "/watchlist", label: "自选股", icon: Star },
   { href: "/pre-market", label: "盘前筛选", icon: Search },
   { href: "/positions", label: "持仓管理", icon: Wallet },
   { href: "/backtest", label: "策略回测", icon: TrendingUp },

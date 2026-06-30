@@ -96,17 +96,24 @@ _warmed_up = False
 _warming = False
 
 
-async def warm_spot_cache():
-    """Pre-fetch spot data in background (non-blocking)."""
+async def warm_spot_cache(force: bool = False):
+    """Pre-fetch spot data in background (non-blocking).
+
+    Set force=True to re-warm even if already warmed (e.g. cache expired).
+    """
     global _warmed_up, _warming
-    if _warmed_up or _warming:
-        return
+    if _warming:
+        return  # Already warming — skip
+    if _warmed_up and not force:
+        # Check if cache is still valid
+        if _cache_get("spot_all", ttl=28800) is not None:
+            return  # Cache still fresh — skip
     _warming = True
     try:
         logger.info("[stock_api] Warming spot cache in background...")
-        df = await _run_akshare(lambda: ak.stock_zh_a_spot_em(), timeout=45)
+        df = await _run_akshare(lambda: ak.stock_zh_a_spot_em(), timeout=120)
         if df is not None and len(df) > 0:
-            _cache_set("spot_all", df, ttl=3600)  # 1 hour
+            _cache_set("spot_all", df, ttl=28800)
             _warmed_up = True
             logger.info(f"[stock_api] Spot cache warmed: {len(df)} stocks")
     except Exception as e:
@@ -180,31 +187,81 @@ async def _run_akshare(fn, timeout: float = 60.0):
 
 @router.get("/search")
 async def search_stocks(q: str = Query(..., min_length=1)):
-    """Fuzzy search A-share stocks by code or name (cached 60s)."""
-    cache_key = "spot_all"
-    df = _cache_get(cache_key, ttl=60)
-    if df is None:
-        df = await _run_akshare(lambda: ak.stock_zh_a_spot_em(), timeout=30)
-        if df is not None and len(df) > 0:
-            _cache_set(cache_key, df, ttl=60)
+    """Fuzzy search A-share stocks by code or name.
 
-    if df is None or len(df) == 0:
-        return {"status": "error", "message": "无法获取股票列表（网络超时或非交易时间）"}
-
+    Uses the fast in-memory name cache (loaded at startup, ~3s).
+    Enriches with close/change_pct from spot cache if available.
+    Returns up to 30 results sorted by match priority.
+    """
     q_lower = q.lower().strip()
-    results = []
-    for _, row in df.iterrows():
-        code = str(row.get("代码", ""))
-        name = str(row.get("名称", ""))
-        if q_lower in code or q_lower in name.lower():
-            results.append({
-                "code": code,
-                "name": name,
-                "close": float(row.get("最新价", 0) or 0),
-                "change_pct": float(row.get("涨跌幅", 0) or 0),
-            })
-        if len(results) >= 20:
+    if not q_lower:
+        return {"status": "error", "message": "请输入搜索关键词"}
+
+    # Ensure name cache is loaded (trigger background load if not)
+    if not _name_loaded:
+        import asyncio as _aio
+        _aio.create_task(_load_name_cache())
+
+    # ── Match from name cache (fast, in-memory) ──
+    max_results = 30
+    exact_code = []     # code == query
+    code_prefix = []    # code starts with query
+    code_contains = []  # code contains query (not prefix)
+    name_start = []     # name starts with query
+    name_contains = []  # name contains query
+
+    for code, name in _name_cache.items():
+        code_lower = code.lower()
+        name_lower = name.lower()
+
+        if code_lower == q_lower:
+            exact_code.append((code, name))
+        elif code_lower.startswith(q_lower):
+            code_prefix.append((code, name))
+        elif q_lower in code_lower:
+            code_contains.append((code, name))
+        elif name_lower.startswith(q_lower):
+            name_start.append((code, name))
+        elif q_lower in name_lower:
+            name_contains.append((code, name))
+
+        total = len(exact_code) + len(code_prefix) + len(code_contains) + len(name_start) + len(name_contains)
+        if total >= max_results * 3:
             break
+
+    # Merge priority: exact code > code prefix > code contains > name start > name contains
+    all_matches = exact_code + code_prefix + code_contains + name_start + name_contains
+
+    # ── Enrich with spot data if available ──
+    spot_df = _cache_get("spot_all", ttl=3600)
+    spot_map = {}
+    if spot_df is not None and len(spot_df) > 0:
+        for _, row in spot_df.iterrows():
+            c = str(row.get("代码", ""))
+            if c:
+                spot_map[c] = row
+
+    # ── Build results ──
+    results = []
+    for code, name in all_matches[:max_results]:
+        row = spot_map.get(code)
+        if row is not None:
+            close = float(row.get("最新价", 0) or 0)
+            change_pct = float(row.get("涨跌幅", 0) or 0)
+        else:
+            close = 0.0
+            change_pct = 0.0
+
+        results.append({
+            "code": code,
+            "name": name,
+            "close": close,
+            "change_pct": change_pct,
+        })
+
+    # If name cache is empty (first startup), trigger warm and tell frontend to retry
+    if not _name_loaded and len(results) == 0:
+        return {"status": "error", "message": "数据加载中，请稍后重试"}
 
     return {"status": "ok", "data": results}
 

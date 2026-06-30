@@ -43,7 +43,7 @@ async def current_pool(date: str = None):
         except ValueError:
             raise HTTPException(status_code=400, detail=f"Invalid date format: {date}")
     else:
-        trade_date = datetime.date.today()
+        trade_date = None  # Let get_candidate_pool auto-detect the most recent
 
     data = await get_candidate_pool(trade_date)
     return {"status": "ok", "data": data}

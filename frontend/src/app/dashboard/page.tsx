@@ -252,7 +252,7 @@ export default function Dashboard() {
 
   return (
     <div className="bg-[#f7f7f8] min-h-screen">
-      <main className="max-w-7xl mx-auto px-4 py-6 space-y-6">
+      <main className="max-w-8xl mx-auto px-4 py-6 space-y-6">
         {/* Date & loading */}
         <div className="flex items-center justify-between">
           <h2 className="text-lg font-semibold text-gray-700">

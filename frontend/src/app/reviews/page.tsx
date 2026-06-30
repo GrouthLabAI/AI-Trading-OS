@@ -68,7 +68,7 @@ export default function ReviewsPage() {
 
   return (
     <div className="bg-[#f7f7f8] min-h-screen">
-      <main className="max-w-7xl mx-auto px-4 py-6 space-y-6">
+      <main className="max-w-8xl mx-auto px-4 py-6 space-y-6">
         {/* Stats Cards */}
         <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
           <StatCard label="总交易" value={stats?.total_trades ?? "?"} color="text-blue-500" />

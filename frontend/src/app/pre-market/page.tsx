@@ -17,6 +17,15 @@ interface Candidate {
   target_price: number;
   position_ratio: number;
   reason: string;
+  // Enrichment
+  first_limit_time?: string;
+  open_count?: number;
+  lu_turnover?: number;
+  amplitude?: number;
+  volume_ratio?: number;
+  total_market_cap?: number;
+  sector?: string;
+  board_pattern?: string;
 }
 
 interface PoolSummary {
@@ -105,7 +114,7 @@ export default function PreMarketPage() {
   }, {} as Record<string, number>) || {};
 
   return (
-    <div className="p-6 max-w-7xl mx-auto">
+    <div className="p-6 max-w-8xl mx-auto">
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div>
@@ -221,6 +230,14 @@ export default function PreMarketPage() {
                   <th className="text-center px-4 py-3 font-medium text-gray-600">前晚分</th>
                   <th className="text-center px-4 py-3 font-medium text-gray-600">校准分</th>
                   <th className="text-left px-4 py-3 font-medium text-gray-600">命中策略</th>
+                  <th className="text-center px-3 py-3 font-medium text-gray-600">涨停时间</th>
+                  <th className="text-center px-3 py-3 font-medium text-gray-600">炸板</th>
+                  <th className="text-center px-3 py-3 font-medium text-gray-600">换手率</th>
+                  <th className="text-center px-3 py-3 font-medium text-gray-600">振幅</th>
+                  <th className="text-center px-3 py-3 font-medium text-gray-600">量比</th>
+                  <th className="text-center px-3 py-3 font-medium text-gray-600">总市值</th>
+                  <th className="text-left px-3 py-3 font-medium text-gray-600">板块</th>
+                  <th className="text-center px-3 py-3 font-medium text-gray-600">类型</th>
                   <th className="text-center px-4 py-3 font-medium text-gray-600">买入价</th>
                   <th className="text-center px-4 py-3 font-medium text-gray-600">止损</th>
                   <th className="text-center px-4 py-3 font-medium text-gray-600">目标</th>
@@ -259,22 +276,57 @@ export default function PreMarketPage() {
                           )) : <span className="text-xs text-gray-400">-</span>}
                         </div>
                       </td>
+                      {/* Enrichment columns */}
+                      <td className="px-3 py-3 text-center text-xs font-mono text-gray-500">
+                        {c.first_limit_time ? `${c.first_limit_time.slice(0,2)}:${c.first_limit_time.slice(2,4)}` : "-"}
+                      </td>
+                      <td className="px-3 py-3 text-center text-xs text-gray-500">
+                        {(c.open_count ?? 0) > 0 ? <span className="text-amber-600 font-medium">{c.open_count}次</span> : "-"}
+                      </td>
+                      <td className="px-3 py-3 text-center text-xs font-mono text-gray-500">
+                        {(c.lu_turnover ?? 0) > 0 ? `${(c.lu_turnover ?? 0).toFixed(2)}%` : "-"}
+                      </td>
+                      <td className="px-3 py-3 text-center text-xs font-mono text-gray-500">
+                        {(c.amplitude ?? 0) > 0 ? `${(c.amplitude ?? 0).toFixed(2)}%` : "-"}
+                      </td>
+                      <td className="px-3 py-3 text-center text-xs font-mono text-gray-500">
+                        {(c.volume_ratio ?? 0) > 0 ? (c.volume_ratio ?? 0).toFixed(2) : "-"}
+                      </td>
+                      <td className="px-3 py-3 text-center text-xs font-mono text-gray-500">
+                        {(c.total_market_cap ?? 0) > 0 ? `${((c.total_market_cap ?? 0) / 1e8).toFixed(2)}亿` : "-"}
+                      </td>
+                      <td className="px-3 py-3 text-xs text-gray-500">
+                        {c.sector || "-"}
+                      </td>
+                      <td className="px-3 py-3 text-center text-xs text-gray-500">
+                        {c.board_pattern || "-"}
+                      </td>
                       <td className="px-4 py-3 text-center font-mono text-gray-500">{c.buy_price?.toFixed(2) || "-"}</td>
                       <td className="px-4 py-3 text-center font-mono text-red-500">{c.stop_loss?.toFixed(2) || "-"}</td>
                       <td className="px-4 py-3 text-center font-mono text-green-500">{c.target_price?.toFixed(2) || "-"}</td>
-                      <td className="px-4 py-3 text-xs text-gray-500 max-w-[200px] truncate" title={c.reason}>
+                      <td className="px-4 py-3 text-xs text-gray-500 whitespace-pre-wrap min-w-[200px]">
                         {c.reason || "-"}
                       </td>
-                      <td className="px-4 py-3 text-center">
-                        <a
-                          href={`https://stockpage.10jqka.com.cn/${c.code}/`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1 px-2 py-1 text-xs text-[#10a37f] hover:text-white hover:bg-[#10a37f] border border-[#10a37f] rounded transition-colors"
-                        >
-                          <ExternalLink className="w-3 h-3" />
-                          同花顺
-                        </a>
+                      <td className="px-4 py-3 text-center whitespace-nowrap">
+                        <div className="flex items-center gap-1.5">
+                          <a
+                            href={`https://stockpage.10jqka.com.cn/${c.code}/`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 px-2 py-1 text-xs text-[#10a37f] hover:text-white hover:bg-[#10a37f] border border-[#10a37f] rounded transition-colors"
+                          >
+                            <ExternalLink className="w-3 h-3" />
+                            同花顺
+                          </a>
+                          <a
+                            href={`/stock/${c.code}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 px-2 py-1 text-xs text-blue-500 hover:text-white hover:bg-blue-500 border border-blue-500 rounded transition-colors"
+                          >
+                            分析
+                          </a>
+                        </div>
                       </td>
                     </tr>
                   );
