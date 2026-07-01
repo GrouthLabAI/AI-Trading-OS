@@ -220,12 +220,36 @@ class DataService:
                 "float_market_cap": float(row.get("流通市值", 0) or 0),
                 "total_market_cap": float(row.get("总市值", 0) or 0),
                 "turnover_rate": float(row.get("换手率", 0) or 0),
-                "reason": str(row.get("涨停原因", "")),
                 "open_count": int(row.get("炸板次数", 0) or 0),
                 "first_limit_time": str(row.get("首次封板时间", "")),
+                "last_limit_time": str(row.get("最后封板时间", "")),
+                "seal_amount": float(row.get("封板资金", 0) or 0),
+                "limit_up_stat": str(row.get("涨停统计", "")),
                 "sector": str(row.get("所属行业", "")),
                 "board_count": int(row.get("连板数", 0) or 0),
             })
+
+        # ── Enrich with spot data (振幅, 量比) ──
+        try:
+            spot_df = _cached("spot_all", ttl=300)
+            if spot_df is None:
+                spot_df = ak.stock_zh_a_spot_em()
+                if spot_df is not None and len(spot_df) > 0:
+                    DataService._cache_set("spot_all", spot_df, ttl=300)
+            if spot_df is not None:
+                for s in stocks:
+                    match = spot_df[spot_df["代码"] == s["code"]]
+                    if len(match) > 0:
+                        r = match.iloc[0]
+                        s["amplitude"] = float(r.get("振幅", 0) or 0)
+                        s["volume_ratio"] = float(r.get("量比", 0) or 0)
+                    else:
+                        s["amplitude"] = 0.0
+                        s["volume_ratio"] = 0.0
+        except Exception:
+            for s in stocks:
+                s.setdefault("amplitude", 0.0)
+                s.setdefault("volume_ratio", 0.0)
 
         return stocks
 

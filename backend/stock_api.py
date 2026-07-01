@@ -539,41 +539,51 @@ async def get_stock_ohlcv(
         import asyncio as _aio
         _aio.create_task(warm_spot_cache())
 
-    # ── Step 2: If stale/insufficient, fetch from AKShare & persist ──
+    # ── Step 2: If stale/insufficient, fetch from AKShare with retries ──
     if not is_fresh:
-        try:
-            df = await _run_akshare(
-                lambda: ak.stock_zh_a_hist(symbol=code, period=period, adjust="qfq"),
-                timeout=60,
-            )
-            if df is not None and len(df) > 0:
-                df = df.tail(max(days, 30))
-                new_bars = []
-                for _, row in df.iterrows():
-                    new_bars.append({
-                        "date": str(row.get("日期", ""))[:10],
-                        "open": float(row.get("开盘", 0) or 0),
-                        "high": float(row.get("最高", 0) or 0),
-                        "low": float(row.get("最低", 0) or 0),
-                        "close": float(row.get("收盘", 0) or 0),
-                        "volume": float(row.get("成交量", 0) or 0),
-                        "turnover_rate": float(row.get("换手率", 0) or 0),
-                        "is_limit_up": False, "is_limit_down": False, "is_one_word": False,
-                    })
-                # Name from cache (stock_zh_a_hist has no name field)
-                resolved = _resolve_name(code)
-                if resolved and resolved != code:
-                    stock_name = resolved
-                    if _is_st_stock(stock_name):
-                        limit_pct = 5.0
-                await _save_ohlcv_to_db(code, stock_name, new_bars)
-                db_bars = new_bars
-                source = "akshare"
-            else:
-                source = "akshare_failed"
-        except Exception as e:
-            logger.warning(f"AKShare fetch failed for {code}: {e}")
-            source = "akshare_error"
+        df = None
+        fetch_ok = False
+        for attempt in range(3):
+            try:
+                df = await _run_akshare(
+                    lambda: ak.stock_zh_a_hist(symbol=code, period=period, adjust="qfq"),
+                    timeout=60,
+                )
+                if df is not None and len(df) > 0:
+                    fetch_ok = True
+                    break
+                if attempt < 2:
+                    await asyncio.sleep(1.5)
+            except Exception as e:
+                logger.warning(f"AKShare fetch attempt {attempt + 1}/3 failed for {code}: {e}")
+                if attempt < 2:
+                    await asyncio.sleep(2)
+
+        if fetch_ok:
+            df = df.tail(max(days, 30))
+            new_bars = []
+            for _, row in df.iterrows():
+                new_bars.append({
+                    "date": str(row.get("日期", ""))[:10],
+                    "open": float(row.get("开盘", 0) or 0),
+                    "high": float(row.get("最高", 0) or 0),
+                    "low": float(row.get("最低", 0) or 0),
+                    "close": float(row.get("收盘", 0) or 0),
+                    "volume": float(row.get("成交量", 0) or 0),
+                    "turnover_rate": float(row.get("换手率", 0) or 0),
+                    "is_limit_up": False, "is_limit_down": False, "is_one_word": False,
+                })
+            # Name from cache (stock_zh_a_hist has no name field)
+            resolved = _resolve_name(code)
+            if resolved and resolved != code:
+                stock_name = resolved
+                if _is_st_stock(stock_name):
+                    limit_pct = 5.0
+            await _save_ohlcv_to_db(code, stock_name, new_bars)
+            db_bars = new_bars
+            source = "akshare"
+        else:
+            source = "akshare_failed"
     else:
         source = "sqlite"
 
@@ -710,6 +720,38 @@ async def get_stock_info(code: str):
                 return {"status": "ok", "data": info}
     except Exception:
         pass
+
+    # ── Step 5: Last fallback — on-demand name lookup ──
+    resolved = _resolve_name(code)
+    if not resolved or resolved == code:
+        # Name cache may be empty (startup race), try direct lookup
+        global _name_loaded
+        try:
+            df = await _run_akshare(lambda: ak.stock_info_a_code_name(), timeout=10)
+            if df is not None:
+                for _, row in df.iterrows():
+                    c = str(row.get("code", "")).zfill(6)
+                    n = str(row.get("name", "")).strip()
+                    if c and n:
+                        _name_cache[c] = n
+                _name_loaded = True
+                resolved = _name_cache.get(code, code)
+        except Exception:
+            pass
+
+    if resolved and resolved != code:
+        return {
+            "status": "ok",
+            "data": {
+                "code": code,
+                "name": resolved,
+                "close": 0, "change_pct": 0, "change_amount": 0,
+                "open": 0, "high": 0, "low": 0, "pre_close": 0,
+                "volume": 0, "amount": 0, "turnover_rate": 0,
+                "total_market_cap": 0, "float_market_cap": 0,
+                "_source": "name_lookup",
+            },
+        }
 
     return {"status": "error", "message": f"未找到股票 {code} 的数据"}
 

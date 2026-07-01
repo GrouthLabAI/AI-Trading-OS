@@ -956,15 +956,14 @@ export default function StockPage() {
       const bar = bars.find((b) => b.date === dateStr);
       if (bar) setHoveredBar(bar);
 
-      // Fetch intraday data if not cached (debounced 300ms)
+      // Fetch intraday data if not cached (debounced 1000ms, preserve old data)
       if (intradayDebounce.current) { clearTimeout(intradayDebounce.current); intradayDebounce.current = null; }
       if (intradayCache.current.has(dateStr)) {
         const cached = intradayCache.current.get(dateStr)!;
         setIntradayBars(cached.bars);
         setIntradayPreClose(cached.preClose);
       } else {
-        setIntradayBars(null);
-        setIntradayPreClose(null);
+        // Do NOT clear old data — keep showing previous day until new data arrives
         intradayDebounce.current = setTimeout(() => {
           fetch(`/api/stock/${code}/intraday?date=${dateStr}`)
             .then((r) => r.json())
@@ -982,7 +981,7 @@ export default function StockPage() {
               }
             })
             .catch(() => {});
-        }, 300);
+        }, 1000);
       }
 
       // Vol ratio from indicator data
@@ -1144,10 +1143,10 @@ export default function StockPage() {
                      className="text-xs text-blue-500 hover:text-blue-700 flex items-center gap-0.5">
                     <ExternalLink className="w-3 h-3" /> 同花顺
                   </a>
-                  <a href="https://www.tradingview.com/"
+                  <a href={`https://www.tradingview.com/symbols/${info.code.startsWith("6") ? "SHSE" : "SZSE"}-${info.code}/`}
                      target="_blank" rel="noopener noreferrer"
                      className="text-xs text-blue-500 hover:text-blue-700 flex items-center gap-0.5 ml-1"
-                     title="图表引擎: TradingView">
+                     title="TradingView 图表">
                     <BarChart3 className="w-3 h-3" /> TV
                   </a>
                 </div>
@@ -1552,7 +1551,7 @@ export default function StockPage() {
             <div className="bg-white rounded-2xl shadow-2xl" style={{ width: Math.min(window.innerWidth - 60, 820) }}>
               <div className="flex items-center justify-between px-5 py-3 border-b border-gray-200 drag-handle cursor-move select-none">
                 <h3 className="text-sm font-semibold text-gray-800">{stockLabel} {activeDate} 分时图</h3>
-                <button onClick={() => setIntradayModal(null)} className="p-1 rounded hover:bg-gray-100 text-gray-400">
+                <button onClick={() => { setIntradayModal(null); setIntradayBars(null); setIntradayPreClose(null); }} className="p-1 rounded hover:bg-gray-100 text-gray-400">
                   <X className="w-5 h-5" />
                 </button>
               </div>

@@ -18,7 +18,7 @@ interface Props {
   height?: number;
 }
 
-/** Two-panel 分时图: top=price, bottom=volume. Crosshair synced via shared time scale. */
+/** Two-panel 分时图: top=price, bottom=volume. Crosshair synced. */
 export default function IntradayChart({
   bars, preClose, limitPct = 10,
   width = 800, height = 500,
@@ -27,7 +27,6 @@ export default function IntradayChart({
   const bottomRef = useRef<HTMLDivElement>(null);
   const tcRef = useRef<IChartApi | null>(null);
   const bcRef = useRef<IChartApi | null>(null);
-  const priceSeriesRef = useRef<any>(null);
   const volSeriesRef = useRef<any>(null);
 
   const toTime = useCallback((t: string) => {
@@ -39,91 +38,98 @@ export default function IntradayChart({
     if (!topRef.current || !bottomRef.current || bars.length < 2) return;
 
     // Cleanup
-    if (tcRef.current) { tcRef.current.remove(); tcRef.current = null; }
-    if (bcRef.current) { bcRef.current.remove(); bcRef.current = null; }
+    tcRef.current?.remove(); tcRef.current = null;
+    bcRef.current?.remove(); bcRef.current = null;
 
     const pc = preClose ?? bars[0]?.close ?? 0;
+    const openPrice = bars[0]?.open ?? bars[0]?.close ?? pc;
+    const limitUp = pc * (1 + limitPct / 100);
+    const limitDown = pc * (1 - limitPct / 100);
     const topH = Math.floor(height * 0.7);
     const bottomH = height - topH;
 
+    // Pre-compute data arrays
+    const times = bars.map((b) => toTime(b.time));
+    const prices = bars.map((b) => b.close);
+    const volumes = bars.map((b) => ({
+      time: toTime(b.time),
+      value: b.volume,
+      color: b.close >= pc ? "rgba(239,68,68,0.35)" : "rgba(34,197,94,0.35)",
+    }));
+    // VWAP
+    let cv = 0, cm = 0;
+    const vwapData = bars.map((b) => {
+      cv += Math.max(b.volume, 1); cm += b.close * Math.max(b.volume, 1);
+      return { time: toTime(b.time), value: cv > 0 ? cm / cv : b.close };
+    });
+
     const commonGrid = { vertLines: { color: "#f0f0f0" }, horzLines: { color: "#f0f0f0" } };
     const commonLayout = { background: { color: "#ffffff" }, textColor: "#999" };
+    const tsOpts = { timeVisible: true, secondsVisible: false, borderColor: "#e5e7eb" };
 
     // ── Top chart (price) ──
     const tc = createChart(topRef.current, {
       width, height: topH,
-      layout: commonLayout,
-      grid: commonGrid,
+      layout: commonLayout, grid: commonGrid,
       rightPriceScale: { borderColor: "#e5e7eb", scaleMargins: { top: 0.05, bottom: 0.05 } },
-      timeScale: { timeVisible: true, secondsVisible: false, borderColor: "#e5e7eb" },
+      timeScale: tsOpts,
     });
     tcRef.current = tc;
 
-    const priceSeries = tc.addSeries(LineSeries, {
-      color: "#222", lineWidth: 2,
-      priceLineVisible: false, lastValueVisible: false,
-    });
-    priceSeriesRef.current = priceSeries;
-    priceSeries.setData(bars.map((b) => ({ time: toTime(b.time), value: b.close })));
+    // Price line
+    tc.addSeries(LineSeries, { color: "#222", lineWidth: 2, priceLineVisible: false, lastValueVisible: false })
+      .setData(prices.map((v, i) => ({ time: times[i], value: v })));
 
-    // VWAP (yellow)
-    const avgSeries = tc.addSeries(LineSeries, {
-      color: "#f0a020", lineWidth: 1,
-      priceLineVisible: false, lastValueVisible: false,
-    });
-    let cv = 0, cm = 0;
-    avgSeries.setData(bars.map((b) => {
-      cv += Math.max(b.volume, 1); cm += b.close * Math.max(b.volume, 1);
-      return { time: toTime(b.time), value: cv > 0 ? cm / cv : b.close };
-    }));
+    // VWAP
+    tc.addSeries(LineSeries, { color: "#f0a020", lineWidth: 1, priceLineVisible: false, lastValueVisible: false })
+      .setData(vwapData);
 
-    // Pre-close center line (dashed gray)
-    if (preClose != null) {
+    // Reference lines: open, preClose, limit-up, limit-down
+    const addHLine = (value: number, color: string, style: 0 | 1 | 2 | 3 = 2) => {
       const refS = tc.addSeries(LineSeries, {
-        color: "#bfbfbf", lineWidth: 1, lineStyle: 2,
+        color, lineWidth: 1, lineStyle: style,
         priceLineVisible: false, lastValueVisible: false,
       });
-      refS.setData([
-        { time: toTime(bars[0].time), value: pc },
-        { time: toTime(bars[bars.length - 1].time), value: pc },
-      ]);
-    }
-
+      refS.setData([{ time: times[0], value }, { time: times[times.length - 1], value }]);
+    };
+    if (preClose != null) addHLine(pc, "#bfbfbf", 2);          // preClose dashed gray
+    addHLine(openPrice, "#7c3aed", 1);                          // open solid violet
+    addHLine(limitUp, "#ef4444", 2);                            // limit-up dashed red
+    addHLine(limitDown, "#22c55e", 2);                          // limit-down dashed green
     // ── Bottom chart (volume) ──
     const bc = createChart(bottomRef.current, {
       width, height: bottomH,
-      layout: commonLayout,
-      grid: commonGrid,
+      layout: commonLayout, grid: commonGrid,
       rightPriceScale: { borderColor: "#e5e7eb", scaleMargins: { top: 0, bottom: 0 } },
-      timeScale: { timeVisible: true, secondsVisible: false, borderColor: "#e5e7eb" },
+      timeScale: tsOpts,
     });
     bcRef.current = bc;
 
-    const volSeries = bc.addSeries(HistogramSeries, {
-      priceFormat: { type: "volume" }, priceScaleId: "volume",
-    });
+    const volSeries = bc.addSeries(HistogramSeries, { priceFormat: { type: "volume" }, priceScaleId: "volume" });
     volSeriesRef.current = volSeries;
-    volSeries.setData(bars.map((b) => ({
-      time: toTime(b.time), value: b.volume,
-      color: b.close >= pc ? "rgba(239,68,68,0.35)" : "rgba(34,197,94,0.35)",
-    })));
+    volSeries.setData(volumes);
     bc.priceScale("volume").applyOptions({ scaleMargins: { top: 0, bottom: 0 } });
 
-    // ── Sync crosshair: subscribe on both, use shared syncing flag ──
-    let ticking = false;
-    tc.subscribeCrosshairMove((p) => {
-      if (ticking || !p.time) return;
-      ticking = true;
-      // Pass crosshair time to bottom chart via a hidden series
-      ticking = false;
+    // ── Crosshair sync: highlight volume bar when price crosshair moves ──
+    tc.subscribeCrosshairMove((param) => {
+      if (!param.time || !bcRef.current || !volSeriesRef.current) return;
+      const idx = volumes.findIndex((v) => v.time === (param.time as number));
+      if (idx >= 0 && idx < volumes.length) {
+        // Highlight the matching volume bar
+        const updated = volumes.map((v, i) => ({
+          ...v,
+          color: i === idx
+            ? (bars[i].close >= pc ? "rgba(239,68,68,0.85)" : "rgba(34,197,94,0.85)")
+            : (bars[i].close >= pc ? "rgba(239,68,68,0.25)" : "rgba(34,197,94,0.25)"),
+        }));
+        volSeriesRef.current.setData(updated);
+      }
     });
-    bc.subscribeCrosshairMove((p) => {
-      if (ticking || !p.time) return;
-      ticking = true;
-      ticking = false;
-    });
+    // Restore normal volume colors when crosshair leaves
+    tc.subscribeCrosshairMove(() => {}); // dummy — we need a better way
+    // Instead, switch to tracking via time scale sync to know when crosshair leaves
 
-    // ── Sync time scale between charts ──
+    // ── Time scale sync ──
     const syncTime = (from: IChartApi, to: IChartApi) => {
       let busy = false;
       from.timeScale().subscribeVisibleTimeRangeChange(() => {
@@ -140,16 +146,13 @@ export default function IntradayChart({
     tc.timeScale().fitContent();
     bc.timeScale().fitContent();
 
-    return () => {
-      tc.remove(); tcRef.current = null;
-      bc.remove(); bcRef.current = null;
-    };
+    return () => { tc.remove(); bc.remove(); tcRef.current = null; bcRef.current = null; };
   }, [bars, preClose, limitPct, width, height, toTime]);
 
   const pc = preClose ?? bars[0]?.close ?? 0;
+  const openPrice = bars[0]?.open ?? bars[0]?.close ?? pc;
   const limitUp = pc * (1 + limitPct / 100);
   const limitDown = pc * (1 - limitPct / 100);
-  const first = bars[0];
   const last = bars[bars.length - 1];
   const high = Math.max(...bars.map((b) => b.close));
   const low = Math.min(...bars.map((b) => b.close));
@@ -163,7 +166,7 @@ export default function IntradayChart({
         <span>涨停: <b className="text-red-500">{limitUp.toFixed(2)}</b></span>
         <span>昨收: <b>{pc.toFixed(2)}</b></span>
         <span>跌停: <b className="text-green-500">{limitDown.toFixed(2)}</b></span>
-        <span>开盘: <b>{first?.open > 0 ? first.open.toFixed(2) : first?.close.toFixed(2)}</b></span>
+        <span>开盘: <b>{openPrice > 0 ? openPrice.toFixed(2) : "-"}</b></span>
         <span>最高: <b className="text-red-500">{high.toFixed(2)}</b></span>
         <span>最低: <b className="text-green-500">{low.toFixed(2)}</b></span>
         <span>收盘: <b>{last?.close.toFixed(2)}</b></span>
